@@ -17,10 +17,10 @@ export class CatalogError extends Error {
   }
 }
 
-/** A job asks for a commit this repository does not have (it was never fetched, or was removed). */
+/** A job asks to run a commit that was never pinned by this service (or whose pin was released). */
 export class CommitUnavailableError extends Error {
   constructor(readonly sha: string) {
-    super(`Commit ${sha} is not available in the catalog repository`);
+    super(`Commit ${sha} is not pinned: it was not queued through this service, or its pin was released`);
     this.name = "CommitUnavailableError";
   }
 }
@@ -41,7 +41,11 @@ export interface CatalogWorkspaces extends RefPinner {
   refs(): Promise<string[]>;
   /** Positions the browsing folder on the branch's commit. Never touches the run folder. */
   browse(ref: string): Promise<Workspace>;
-  /** Positions the run folder on exactly this commit and installs its dependencies. Only between jobs. */
+  /**
+   * Positions the run folder on exactly this (pinned) commit and installs its dependencies. It force-checks-out
+   * and cleans the folder, so it must only be called between jobs: the one caller is the Detox executor, which
+   * the scheduler runs one job at a time (the `devices` resource).
+   */
   prepareRun(sha: string): Promise<Workspace>;
   /** Forgets every pinned commit not in `keep`. Returns how many were released. */
   prunePins(keep: ReadonlySet<string>): Promise<number>;
@@ -54,6 +58,7 @@ export interface CatalogWorkspaces extends RefPinner {
  */
 export class GitCatalogWorkspaces implements CatalogWorkspaces {
   private readonly git = new Mutex();
+  private readonly runFolder = new Mutex();
 
   constructor(
     private readonly runRepo: GitRepo,
@@ -91,16 +96,23 @@ export class GitCatalogWorkspaces implements CatalogWorkspaces {
     });
   }
 
-  async prepareRun(sha: string): Promise<Workspace> {
-    if (!COMMIT_SHA.test(sha)) throw new CommitUnavailableError(sha);
-    await this.git.run(async () => {
-      if (!(await this.runRepo.hasCommit(sha))) throw new CommitUnavailableError(sha);
-      await this.runRepo.checkoutDetached(sha);
-      assertCatalog(this.runRepo.dir);
+  /**
+   * Only for a commit that was pinned when its job was queued: that is what proves it came from an allowed
+   * branch and still exists, and it closes the gap between pinning and running. The whole preparation holds the
+   * run folder's own lock, so two preparations can never interleave their checkout and install; browsing and
+   * fetching (the git mutex) never wait for the install.
+   */
+  prepareRun(sha: string): Promise<Workspace> {
+    return this.runFolder.run(async () => {
+      if (!COMMIT_SHA.test(sha)) throw new CommitUnavailableError(sha);
+      await this.git.run(async () => {
+        if (!(await this.runRepo.isPinned(sha))) throw new CommitUnavailableError(sha);
+        await this.runRepo.checkoutDetached(sha);
+        assertCatalog(this.runRepo.dir);
+      });
+      await this.installer.ensure(this.runRepo.dir);
+      return { dir: this.runRepo.dir, sha };
     });
-    // Outside the mutex: installing can take minutes and git operations on the other folder must not wait for it.
-    await this.installer.ensure(this.runRepo.dir);
-    return { dir: this.runRepo.dir, sha };
   }
 
   prunePins(keep: ReadonlySet<string>): Promise<number> {

@@ -7,7 +7,20 @@ export interface CommandOptions {
   readonly cwd: string;
   /** Kill the command (and fail) after this long. */
   readonly timeoutMs: number;
+  /** Added to the environment the command gets. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Variables taken out of the inherited environment (e.g. ones that would redirect git). */
+  readonly removeEnv?: readonly string[];
+  /**
+   * Start from a minimal environment (PATH, HOME, temp folders, locale) instead of the service's own, so a
+   * program that runs third-party code never sees the service's secrets.
+   */
+  readonly minimalEnv?: boolean;
+}
+
+/** `https://token@host/x` -> `https://***@host/x`: tools echo remote URLs in their errors. */
+export function redactCredentials(text: string): string {
+  return text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1***@");
 }
 
 export class CommandFailedError extends Error {
@@ -17,7 +30,11 @@ export class CommandFailedError extends Error {
     readonly exitCode: number | null,
     readonly stderr: string,
   ) {
-    super(`${command} ${args.slice(0, 2).join(" ")} failed (${exitCode === null ? "no exit code" : `exit ${exitCode}`}): ${stderr.trim().slice(0, 500)}`);
+    super(
+      redactCredentials(
+        `${command} ${args.slice(0, 2).join(" ")} failed (${exitCode === null ? "no exit code" : `exit ${exitCode}`}): ${stderr.trim().slice(0, 500)}`,
+      ),
+    );
     this.name = "CommandFailedError";
   }
 }

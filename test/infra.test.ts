@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { CommandFailedError } from "../src/core/command-runner";
+import { CommandFailedError, redactCredentials } from "../src/core/command-runner";
 import { Mutex } from "../src/core/mutex";
 import { ExecCommandRunner } from "../src/infra/exec-command-runner";
 
@@ -36,9 +36,45 @@ describe("ExecCommandRunner", () => {
     await assert.rejects(runner.run("definitely-not-a-program-xyz", [], here), CommandFailedError);
   });
 
+  it("can start from a minimal environment, so third-party code never sees the service's secrets", async () => {
+    process.env.E2E_TEST_SECRET_TOKEN = "super-secret-value";
+    try {
+      const script = "process.stdout.write(JSON.stringify({ secret: process.env.E2E_TEST_SECRET_TOKEN ?? null, path: Boolean(process.env.PATH || process.env.Path), added: process.env.ADDED ?? null }))";
+      const minimal = await runner.run(process.execPath, ["-e", script], { ...here, minimalEnv: true, env: { ADDED: "yes" } });
+      assert.deepEqual(JSON.parse(minimal.stdout), { secret: null, path: true, added: "yes" });
+      const full = await runner.run(process.execPath, ["-e", script], here);
+      assert.equal(JSON.parse(full.stdout).secret, "super-secret-value", "the default is unchanged");
+    } finally {
+      delete process.env.E2E_TEST_SECRET_TOKEN;
+    }
+  });
+
+  it("can take variables out of the inherited environment", async () => {
+    process.env.E2E_TEST_REDIRECT = "from-the-service";
+    try {
+      const result = await runner.run(process.execPath, ["-e", "process.stdout.write(String(process.env.E2E_TEST_REDIRECT))"], { ...here, removeEnv: ["E2E_TEST_REDIRECT"] });
+      assert.equal(result.stdout, "undefined");
+    } finally {
+      delete process.env.E2E_TEST_REDIRECT;
+    }
+  });
+
+  it("does not call an output overflow a timeout", async () => {
+    await assert.rejects(runner.run(process.execPath, ["-e", "process.stdout.write('x'.repeat(20 * 1024 * 1024))"], here), /size limit/);
+  });
+
   it("adds to the environment without losing it", async () => {
     const result = await runner.run(process.execPath, ["-e", "process.stdout.write(process.env.E2E_TEST_VALUE + '|' + (process.env.PATH ? 'path' : 'nopath'))"], { ...here, env: { E2E_TEST_VALUE: "set" } });
     assert.equal(result.stdout, "set|path");
+  });
+});
+
+describe("CommandFailedError", () => {
+  it("never repeats credentials that a tool echoed from a remote URL", () => {
+    const error = new CommandFailedError("git", ["fetch"], 128, "fatal: unable to access 'https://user:hunter2@git.example.com/org/repo.git/': refused");
+    assert.ok(!error.message.includes("hunter2"), error.message);
+    assert.match(error.message, /https:\/\/\*\*\*@git\.example\.com/);
+    assert.equal(redactCredentials("plain text without urls"), "plain text without urls");
   });
 });
 

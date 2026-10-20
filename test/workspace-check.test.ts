@@ -62,10 +62,58 @@ describe("checkWorkspaces", () => {
   });
 });
 
+describe("checkWorkspaces: the folders themselves", () => {
+  it("refuses a folder that is a sub-folder of a working tree, not its root", async () => {
+    const fixture = new CatalogFixture(scratchDir());
+    const sub = makeDir(fixture.runnerDir, "e2e-testing");
+    fs.writeFileSync(path.join(sub, "orch.rc.json"), "{}");
+    const problems = await problemsFor(sub, fixture.infoDir, fixture.remote);
+    assert.ok(problems.some((p) => p.includes("sub-folder of a working tree")));
+  });
+
+  it("refuses a folder with uncommitted work: the service would wipe it before the first job", async () => {
+    const fixture = new CatalogFixture(scratchDir());
+    fs.writeFileSync(path.join(fixture.runnerDir, "my-notes.txt"), "do not lose");
+    const problems = await problemsFor(fixture.runnerDir, fixture.infoDir, fixture.remote);
+    assert.ok(problems.some((p) => p.includes("E2E_DETOX_RUNNER_DIR has uncommitted changes")));
+    fs.writeFileSync(path.join(fixture.infoDir, "orch.rc.json"), "{\"changed\":true}");
+    assert.ok((await problemsFor(fixture.runnerDir, fixture.infoDir, fixture.remote)).some((p) => p.includes("E2E_DETOX_INFO_DIR has uncommitted changes")));
+  });
+
+  it("refuses the same working tree given twice, even through a different spelling", async () => {
+    const fixture = new CatalogFixture(scratchDir());
+    const again = `${fixture.runnerDir}${path.sep}.`;
+    const problems = await problemsFor(fixture.runnerDir, again, fixture.remote);
+    assert.ok(problems.some((p) => p.includes("the same working tree")));
+  });
+});
+
 describe("normalizeRepoUrl", () => {
-  it("ignores .git, trailing slashes and case", () => {
-    const same = ["git@Host.com:Org/Repo.git", "git@host.com:org/repo", "git@host.com:org/repo/", " git@host.com:org/repo.git "];
-    assert.equal(new Set(same.map(normalizeRepoUrl)).size, 1);
-    assert.notEqual(normalizeRepoUrl("git@host.com:org/repo"), normalizeRepoUrl("git@host.com:org/other"));
+  it("ignores .git, trailing slashes, credentials, ports and case", () => {
+    const same = [
+      "git@Host.com:Org/Repo.git",
+      "git@host.com:org/repo",
+      "git@host.com:org/repo/",
+      " git@host.com:org/repo.git ",
+      "ssh://git@host.com/org/repo.git",
+      "ssh://git@host.com:2222/org/repo",
+      "https://host.com/org/repo",
+      "https://token:secret@host.com/org/repo.git/",
+      "HTTPS://HOST.COM/Org/Repo",
+    ];
+    assert.equal(new Set(same.map(normalizeRepoUrl)).size, 1, same.map(normalizeRepoUrl).join(" | "));
+  });
+
+  it("tells different repositories and hosts apart", () => {
+    const base = normalizeRepoUrl("git@host.com:org/repo");
+    for (const other of ["git@host.com:org/other", "git@other.com:org/repo", "git@host.com:other/repo", "https://host.com/org/repo-two"]) {
+      assert.notEqual(normalizeRepoUrl(other), base, other);
+    }
+  });
+
+  it("compares local paths as paths, however the slashes are written", () => {
+    assert.equal(normalizeRepoUrl("C:\\repos\\Catalog.git"), normalizeRepoUrl("c:/repos/catalog"));
+    assert.equal(normalizeRepoUrl("file:///srv/git/catalog.git"), normalizeRepoUrl("/srv/git/catalog/"));
+    assert.notEqual(normalizeRepoUrl("C:\\repos\\a"), normalizeRepoUrl("C:\\repos\\b"));
   });
 });

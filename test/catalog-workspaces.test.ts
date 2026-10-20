@@ -123,7 +123,7 @@ describe("browse", () => {
 
   it("never moves the run folder, so a job in progress is not affected", async () => {
     const { catalog, fixture } = setup();
-    const running = fixture.sha("iteration_1");
+    const running = await catalog.pin("iteration_1");
     await catalog.prepareRun(running);
     await catalog.browse("iteration_2");
     await catalog.browse("main");
@@ -159,13 +159,13 @@ describe("prepareRun", () => {
 
   it("installs dependencies in the run folder, after the checkout", async () => {
     const { catalog, fixture, installer } = setup();
-    await catalog.prepareRun(fixture.sha("main"));
+    await catalog.prepareRun(await catalog.pin("main"));
     assert.deepEqual(installer.installed, [fixture.runnerDir]);
   });
 
   it("starts every job from a clean tree: edits and untracked files go, ignored files stay", async () => {
     const { catalog, fixture } = setup();
-    const sha = fixture.sha("iteration_1");
+    const sha = await catalog.pin("iteration_1");
     await catalog.prepareRun(sha);
     fs.writeFileSync(path.join(fixture.runnerDir, "orch.rc.json"), "tampered");
     fs.writeFileSync(path.join(fixture.runnerDir, "leftover.txt"), "from the last job");
@@ -188,6 +188,61 @@ describe("prepareRun", () => {
     assert.equal(fixture.headOf(fixture.runnerDir), before);
   });
 
+  it("refuses a commit that exists but was never pinned: only what was queued through the service may run", async () => {
+    const { catalog, fixture, installer } = setup();
+    const notAllowedBranchTip = fixture.sha("feature/not-allowed");
+    await catalog.fetch();
+    const before = fixture.headOf(fixture.runnerDir);
+    await assert.rejects(catalog.prepareRun(notAllowedBranchTip), CommitUnavailableError);
+    assert.equal(fixture.headOf(fixture.runnerDir), before);
+    assert.deepEqual(installer.installed, []);
+  });
+
+  it("refuses a commit whose pin was released or pruned", async () => {
+    const { catalog } = setup();
+    const sha = await catalog.pin("iteration_1");
+    await catalog.prunePins(new Set());
+    await assert.rejects(catalog.prepareRun(sha), CommitUnavailableError);
+    await catalog.pin("iteration_1");
+    await assert.doesNotReject(catalog.prepareRun(sha));
+  });
+
+  it("never lets two preparations overlap: the second waits for the first one's install", async () => {
+    const fixture = new CatalogFixture(scratchDir());
+    const runner = new ExecCommandRunner();
+    let active = 0;
+    let overlapped = false;
+    const slowInstaller: DependencyInstaller = {
+      async ensure() {
+        active++;
+        overlapped ||= active > 1;
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        active--;
+        return true;
+      },
+    };
+    const catalog = new GitCatalogWorkspaces(new GitRepo(fixture.runnerDir, runner), new GitRepo(fixture.infoDir, runner), ALLOWED, slowInstaller);
+    const a = await catalog.pin("iteration_1");
+    const b = await catalog.pin("iteration_2");
+    await Promise.all([catalog.prepareRun(a), catalog.prepareRun(b), catalog.prepareRun(a)]);
+    assert.equal(overlapped, false);
+    assert.equal(fixture.headOf(fixture.runnerDir), a, "the last one asked for decides where the folder ends up");
+  });
+
+  it("does not make browsing wait for a long install", async () => {
+    const fixture = new CatalogFixture(scratchDir());
+    const runner = new ExecCommandRunner();
+    let releaseInstall: () => void = () => undefined;
+    const hanging: DependencyInstaller = { ensure: () => new Promise<boolean>((resolve) => (releaseInstall = () => resolve(true))) };
+    const catalog = new GitCatalogWorkspaces(new GitRepo(fixture.runnerDir, runner), new GitRepo(fixture.infoDir, runner), ALLOWED, hanging);
+    const running = catalog.prepareRun(await catalog.pin("iteration_1"));
+    await new Promise((resolve) => setTimeout(resolve, 200)); // the checkout is done, the install is "running"
+    const browsed = await Promise.race([catalog.browse("iteration_2"), new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 5000))]);
+    assert.notEqual(browsed, "blocked");
+    releaseInstall();
+    await running;
+  });
+
   it("does not install when the commit is refused", async () => {
     const { catalog, installer } = setup();
     await assert.rejects(catalog.prepareRun("e".repeat(40)), CommitUnavailableError);
@@ -196,16 +251,16 @@ describe("prepareRun", () => {
 
   it("refuses a commit that is not a catalog", async () => {
     const { catalog, fixture } = setup(["*"]);
-    const sha = fixture.uncatalogedBranch("plain");
+    fixture.uncatalogedBranch("plain");
     await catalog.fetch();
-    await assert.rejects(catalog.prepareRun(sha), CatalogError);
+    await assert.rejects(catalog.prepareRun(await catalog.pin("plain")), CatalogError);
   });
 });
 
 describe("concurrency", () => {
   it("serialises git operations: a burst of fetches, browses, pins and runs all succeed", async () => {
     const ctx = setup();
-    const sha = ctx.fixture.sha("iteration_1");
+    const sha = await ctx.catalog.pin("iteration_1");
     const results = await Promise.all([
       ctx.catalog.fetch(),
       ctx.catalog.browse("iteration_2"),
