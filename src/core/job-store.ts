@@ -16,6 +16,12 @@ export interface JobStore {
   /** Jobs that are running or cancelling: after a crash, these are the orphans. */
   listActive(): readonly Job[];
   /**
+   * Starts a queued job if every resource it needs is free: takes all of them and moves the job to
+   * `running` in one transaction. Returns the running job, or undefined when it is no longer queued
+   * or a resource is held by another job (nothing is taken in that case).
+   */
+  claim(id: string): Job | undefined;
+  /**
    * Moves a job to a new status atomically, releasing its resources and closing its open
    * phases when the move is final. Throws JobNotFoundError, InvalidTransitionError when the
    * move is not allowed, or InvalidDetailsError when the details do not fit the new status:

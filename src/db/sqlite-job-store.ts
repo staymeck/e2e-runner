@@ -155,47 +155,66 @@ export class SqliteJobStore implements JobStore {
     return this.hydrate(this.db.all("SELECT * FROM jobs WHERE status IN ('running', 'cancelling') ORDER BY seq ASC"));
   }
 
+  claim(id: string): Job | undefined {
+    const at = this.now().toISOString();
+    const claimed = this.db.transaction(() => {
+      const row = this.db.get("SELECT status, locks FROM jobs WHERE id = ?", id);
+      if (!row || row.status !== "queued") return false;
+      const resources = JSON.parse(row.locks as string) as string[];
+      for (const resource of resources) {
+        if (this.db.get("SELECT job_id FROM locks WHERE resource = ?", resource)) return false;
+      }
+      for (const resource of resources) this.db.run("INSERT INTO locks (resource, job_id) VALUES (?, ?)", resource, id);
+      this.applyTransition(id, "running", {}, at);
+      return true;
+    });
+    return claimed ? this.require(id) : undefined;
+  }
+
   transition(id: string, to: JobStatus, details: TransitionDetails = {}): Job {
     const at = this.now().toISOString();
-    this.db.transaction(() => {
-      const row = this.db.get("SELECT status, pid, error FROM jobs WHERE id = ?", id);
-      if (!row) throw new JobNotFoundError(id);
-      const from = row.status as JobStatus;
-      if (!canTransition(from, to)) throw new InvalidTransitionError(id, from, to);
-      this.checkDetails(id, to, details, row.error as string | null);
-
-      const terminal = isTerminal(to);
-      const keptPid = details.pid === undefined ? ((row.pid as number | null) ?? null) : details.pid;
-      this.db.run(
-        `UPDATE jobs SET status = ?,
-           started_at = COALESCE(started_at, ?),
-           finished_at = ?,
-           cancel_requested_at = COALESCE(cancel_requested_at, ?),
-           outcome = COALESCE(outcome, ?),
-           error = COALESCE(error, ?),
-           pid = ?,
-           log_path = COALESCE(?, log_path),
-           report_path = COALESCE(?, report_path)
-         WHERE id = ?`,
-        to,
-        to === "running" ? at : null,
-        terminal ? at : null,
-        to === "cancelling" ? at : null,
-        to === "failed" ? "failure" : (details.outcome ?? null),
-        details.error ?? null,
-        terminal ? null : keptPid,
-        details.logPath ?? null,
-        details.reportPath ?? null,
-        id,
-      );
-      if (terminal) {
-        this.closePhases(id, to, at);
-        // Releasing the resources in the same transaction as the final status means a job can
-        // never be finished while still holding them, or the other way round.
-        this.db.run("DELETE FROM locks WHERE job_id = ?", id);
-      }
-    });
+    this.db.transaction(() => this.applyTransition(id, to, details, at));
     return this.require(id);
+  }
+
+  /** The body of a transition. Must run inside a transaction. */
+  private applyTransition(id: string, to: JobStatus, details: TransitionDetails, at: string): void {
+    const row = this.db.get("SELECT status, pid, error FROM jobs WHERE id = ?", id);
+    if (!row) throw new JobNotFoundError(id);
+    const from = row.status as JobStatus;
+    if (!canTransition(from, to)) throw new InvalidTransitionError(id, from, to);
+    this.checkDetails(id, to, details, row.error as string | null);
+
+    const terminal = isTerminal(to);
+    const keptPid = details.pid === undefined ? ((row.pid as number | null) ?? null) : details.pid;
+    this.db.run(
+      `UPDATE jobs SET status = ?,
+         started_at = COALESCE(started_at, ?),
+         finished_at = ?,
+         cancel_requested_at = COALESCE(cancel_requested_at, ?),
+         outcome = COALESCE(outcome, ?),
+         error = COALESCE(error, ?),
+         pid = ?,
+         log_path = COALESCE(?, log_path),
+         report_path = COALESCE(?, report_path)
+       WHERE id = ?`,
+      to,
+      to === "running" ? at : null,
+      terminal ? at : null,
+      to === "cancelling" ? at : null,
+      to === "failed" ? "failure" : (details.outcome ?? null),
+      details.error ?? null,
+      terminal ? null : keptPid,
+      details.logPath ?? null,
+      details.reportPath ?? null,
+      id,
+    );
+    if (terminal) {
+      this.closePhases(id, to, at);
+      // Releasing the resources in the same transaction as the final status means a job can
+      // never be finished while still holding them, or the other way round.
+      this.db.run("DELETE FROM locks WHERE job_id = ?", id);
+    }
   }
 
   updatePhase(id: string, position: number, update: PhaseUpdate): Job {

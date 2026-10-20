@@ -219,9 +219,10 @@ Transiciones válidas (cualquier otra la rechaza el repositorio de jobs):
 - Reintentar solo se permite sobre un job terminal (409 en caso contrario): crea un job nuevo con el mismo sha,
   parámetros y recursos, y `retry_of` apuntando al original.
 
-**Reconciliación al arrancar:** por cada job `running` o `cancelling`: si hay `pid`, se mata el árbol de procesos
-(el árbol puede seguir vivo tras un crash y mantener ocupados dispositivos y puertos), se llama a `cleanup`, el job
-pasa a `failed` ("servicio reiniciado durante la fase X") y se liberan sus recursos. La cola `queued` se conserva;
+**Reconciliación al arrancar:** por cada job `running` o `cancelling`: el adaptador recibe el `pid` registrado para
+limpiar (el árbol de procesos puede seguir vivo tras un crash y mantener ocupados dispositivos y puertos). Un job
+`running` pasa a `failed` ("servicio reiniciado durante la fase X") y uno `cancelling` pasa a `cancelled` (la
+cancelación ya estaba pedida); en ambos casos se liberan sus recursos. La cola `queued` se conserva;
 un `queued` cuyo sha ya no existe pasa a `failed` ("commit no disponible").
 
 ## 5. API v1
