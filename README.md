@@ -61,6 +61,14 @@ Ejemplo de `E2E_SERVICE_CONFIG`:
 Toda petición necesita `Authorization: Bearer <clave>`.
 
 - `GET /v1/health`: `{ "ok": true }`.
+- `GET /v1/projects`: proyectos configurados, con su rama por defecto y las ramas permitidas.
+- `POST /v1/jobs` `{ "project", "target", "ref"?, "kind"?, "params"? }`: encola un job (201). La rama debe cumplir
+  `allowedBranches`; el commit se fija al encolar.
+- `GET /v1/jobs`: filtros `project`, `ref`, `target`, `status` (`queued,running`), `limit` y `before` (cursor).
+- `GET /v1/jobs/:id`: estado, fases y resultado.
+- `POST /v1/jobs/:id/cancel`: cancela un job en cola o en ejecución (idempotente; 409 si ya terminó).
+
+Los errores tienen la forma `{ "statusCode", "error", "message" }`; ver `docs/design.md` sección 5.
 
 ## Convenciones
 

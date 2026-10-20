@@ -245,8 +245,8 @@ Todo bajo `/v1`, JSON. El nombre del proyecto va en la ruta: el núcleo no tiene
 | GET | `/v1/projects/:id/refs` | ramas permitidas |
 | POST | `/v1/projects/:id/browse` `{ref}` | posiciona la consulta |
 | GET | `/v1/projects/:id/targets` | escenarios de lo consultado |
-| POST | `/v1/jobs` `{project, ref, target, params?}` | fija el sha, valida y encola |
-| GET | `/v1/jobs` | filtros project, ref, target, status; `limit` y cursor |
+| POST | `/v1/jobs` `{project, target, ref?, kind?, params?}` | valida, fija el sha y encola (201) |
+| GET | `/v1/jobs` | filtros project, ref, target, status (`a,b`); `limit` (1-200) y cursor `before` |
 | GET | `/v1/jobs/:id` | estado, fases, resultado |
 | POST | `/v1/jobs/:id/cancel` | cancela (cola o ejecución) |
 | POST | `/v1/jobs/:id/retry` | nuevo job con el mismo sha y parámetros |
@@ -254,6 +254,26 @@ Todo bajo `/v1`, JSON. El nombre del proyecto va en la ruta: el núcleo no tiene
 | GET | `/v1/jobs/:id/report/*` | reporte, por id de job |
 | POST | `/v1/jobs/:id/stream-ticket` | ticket de un solo uso para el WebSocket |
 | WS | `/v1/jobs/:id/stream?ticket=...&from=<byte>` | repetición + en vivo, sin duplicados ni huecos |
+
+Orden de las validaciones en `POST /v1/jobs`: proyecto -> rama permitida (lista del servicio, no del adaptador) ->
+`kind` -> nombre del escenario -> parámetros (esquema estricto del adaptador) -> `pin(ref)` (resuelve y protege el
+commit) -> encolar. Nada se crea si falla un paso. Los campos desconocidos del cuerpo se rechazan; el cuerpo no puede
+pasar de 64 KB. `ref` y `kind` son opcionales (rama por defecto del proyecto, primer `kind` del adaptador).
+
+Errores: `{ statusCode, error, message }`.
+
+| Código | `error` | Cuándo |
+|---|---|---|
+| 400 | `invalid_request` | cuerpo o filtros mal formados, escenario o parámetros inválidos |
+| 401 | | falta o es inválida la API key |
+| 403 | `ref_not_allowed` | rama fuera de `allowedBranches` o con nombre inseguro |
+| 404 | `unknown_project`, `job_not_found` | proyecto sin configurar o sin adaptador; job inexistente |
+| 409 | `job_finished`, `invalid_transition` | cancelar un job ya terminado |
+| 413 | `payload_too_large` | cuerpo mayor de 64 KB |
+| 422 | `ref_not_found` | rama permitida que no existe (un `fetch` puede traerla) |
+| 500 | `internal_error` | cualquier otro; el detalle va al log, nunca al cliente |
+
+La respuesta de un job no incluye rutas del servidor (`log_path`, `report_path`) ni el `pid`.
 
 ## 6. Seguridad
 

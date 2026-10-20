@@ -4,8 +4,9 @@ import { after, before, describe, it } from "node:test";
 import type { INestApplication } from "@nestjs/common";
 import { createApp } from "../src/app";
 import type { ServiceConfig } from "../src/config/service-config";
-import { openMemoryDatabase } from "../src/db/open-database";
-import { SqliteJobStore } from "../src/db/sqlite-job-store";
+import { buildService } from "./helpers/service";
+
+const newJobs = () => buildService().service;
 
 const KEY = "current-key-0123456789";
 const NEXT_KEY = "next-key-0123456789ab";
@@ -22,7 +23,7 @@ describe("shutdown", () => {
   it("runs the registered callbacks once, even if one of them throws", async () => {
     const calls: string[] = [];
     const app = await createApp(config, {
-      jobs: new SqliteJobStore(openMemoryDatabase()),
+      jobs: newJobs(),
       onShutdown: [
         () => {
           calls.push("first");
@@ -40,7 +41,7 @@ describe("shutdown", () => {
   it("waits for each asynchronous callback before running the next (drain, then close the database)", async () => {
     const calls: string[] = [];
     const app = await createApp(config, {
-      jobs: new SqliteJobStore(openMemoryDatabase()),
+      jobs: newJobs(),
       onShutdown: [
         async () => {
           await new Promise((resolve) => setTimeout(resolve, 30));
@@ -61,7 +62,7 @@ describe("HTTP API", () => {
   let base: string;
 
   before(async () => {
-    app = await createApp(config, { jobs: new SqliteJobStore(openMemoryDatabase()) });
+    app = await createApp(config, { jobs: newJobs() });
     await app.listen(0, "127.0.0.1");
     base = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}`;
   });

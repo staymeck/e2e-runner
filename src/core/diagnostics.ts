@@ -5,4 +5,6 @@ export interface Diagnostics {
   error(fields: object, message: string): void;
 }
 
+export const DIAGNOSTICS = Symbol("DIAGNOSTICS");
+
 export const silentDiagnostics: Diagnostics = { info: () => undefined, warn: () => undefined, error: () => undefined };
