@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { beforeEach, describe, it } from "node:test";
-import { InvalidTransitionError, JobNotFoundError, canTransition, isTerminal, JOB_STATUSES, type NewJob } from "../src/core/job";
+import {
+  InvalidDetailsError,
+  InvalidPhaseTransitionError,
+  InvalidTransitionError,
+  JOB_STATUSES,
+  JobNotActiveError,
+  JobNotFoundError,
+  RetryNotAllowedError,
+  canPhaseTransition,
+  canTransition,
+  isTerminal,
+  type NewJob,
+} from "../src/core/job";
 import type { Database } from "../src/db/database";
 import { openDatabase, openMemoryDatabase } from "../src/db/open-database";
 import { SqliteJobStore } from "../src/db/sqlite-job-store";
+import { FaultyDatabase } from "./helpers/faulty-database";
 import { scratchDir } from "./helpers/workspace";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -23,21 +36,36 @@ function newJob(overrides: Partial<NewJob> = {}): NewJob {
   };
 }
 
-function setup() {
-  const db = openMemoryDatabase();
+function storeOver(db: Database) {
   let tick = 0;
   let counter = 0;
-  const store = new SqliteJobStore(db, {
+  return new SqliteJobStore(db, {
     now: () => new Date(Date.UTC(2026, 9, 20, 12, 0, tick++)),
     newId: () => `job-${++counter}`,
   });
-  return { db, store };
 }
 
-describe("transitions", () => {
-  it("allow exactly the documented moves", () => {
+function setup() {
+  const db = openMemoryDatabase();
+  return { db, store: storeOver(db) };
+}
+
+type Store = SqliteJobStore;
+
+/** Runs every phase to success and finishes the job, as a normal run would. */
+function complete(store: Store, id: string, outcome: "success" | "warning" = "success") {
+  if (store.get(id)?.status === "queued") store.transition(id, "running");
+  for (const phase of store.get(id)?.phases ?? []) {
+    store.updatePhase(id, phase.position, { status: "running" });
+    store.updatePhase(id, phase.position, { status: "succeeded", exitCode: 0, outcome: "success" });
+  }
+  return store.transition(id, "succeeded", { outcome });
+}
+
+describe("state machines", () => {
+  it("allow exactly the documented job moves", () => {
     const allowed: Record<string, string[]> = {
-      queued: ["running", "cancelled"],
+      queued: ["running", "cancelled", "failed"],
       running: ["succeeded", "failed", "cancelling"],
       cancelling: ["cancelled", "failed"],
       succeeded: [],
@@ -50,6 +78,15 @@ describe("transitions", () => {
       }
     }
     assert.deepEqual(JOB_STATUSES.filter(isTerminal), ["succeeded", "failed", "cancelled"]);
+  });
+
+  it("only lets a phase go forward", () => {
+    assert.equal(canPhaseTransition("pending", "running"), true);
+    assert.equal(canPhaseTransition("running", "running"), true);
+    assert.equal(canPhaseTransition("running", "succeeded"), true);
+    assert.equal(canPhaseTransition("succeeded", "running"), false);
+    assert.equal(canPhaseTransition("failed", "succeeded"), false);
+    assert.equal(canPhaseTransition("pending", "succeeded"), false);
   });
 });
 
@@ -85,14 +122,36 @@ describe("SqliteJobStore.create and get", () => {
     assert.deepEqual(ctx.store.create(newJob({ params: { a: [1, { b: "c" }], d: null } })).params, { a: [1, { b: "c" }], d: null });
   });
 
-  it("links a retry to its original", () => {
-    const original = ctx.store.create(newJob());
-    assert.equal(ctx.store.create(newJob({ retryOf: original.id })).retryOf, original.id);
+  it("creates nothing at all when any insert fails (jobs and phases are one write)", () => {
+    const faulty = storeOver(new FaultyDatabase(ctx.db, { failRun: (sql, count) => sql.includes("job_phases") && count >= 2 }));
+    assert.throws(() => faulty.create(newJob({ phases: ["a", "b", "c"] })), /injected/);
+    assert.equal(ctx.store.list().jobs.length, 0);
+    assert.equal(ctx.db.get("SELECT COUNT(*) AS n FROM job_phases")?.n, 0);
+  });
+});
+
+describe("retries", () => {
+  let ctx: ReturnType<typeof setup>;
+  beforeEach(() => (ctx = setup()));
+
+  it("link to a finished job", () => {
+    ctx.store.create(newJob());
+    complete(ctx.store, "job-1");
+    assert.equal(ctx.store.create(newJob({ retryOf: "job-1" })).retryOf, "job-1");
   });
 
-  it("refuses a retry of a job that does not exist, and creates nothing", () => {
-    assert.throws(() => ctx.store.create(newJob({ retryOf: "ghost" })));
-    assert.equal(ctx.store.list().jobs.length, 0);
+  it("are refused while the original is queued, running or cancelling", () => {
+    ctx.store.create(newJob());
+    assert.throws(() => ctx.store.create(newJob({ retryOf: "job-1" })), RetryNotAllowedError);
+    ctx.store.transition("job-1", "running");
+    assert.throws(() => ctx.store.create(newJob({ retryOf: "job-1" })), RetryNotAllowedError);
+    ctx.store.transition("job-1", "cancelling");
+    assert.throws(() => ctx.store.create(newJob({ retryOf: "job-1" })), RetryNotAllowedError);
+    assert.equal(ctx.store.list().jobs.length, 1, "no retry was left behind");
+  });
+
+  it("are refused when the original does not exist", () => {
+    assert.throws(() => ctx.store.create(newJob({ retryOf: "ghost" })), RetryNotAllowedError);
     assert.equal(ctx.db.get("SELECT COUNT(*) AS n FROM job_phases")?.n, 0);
   });
 });
@@ -109,6 +168,10 @@ describe("SqliteJobStore.transition", () => {
     assert.equal(running.pid, 4321);
     assert.equal(running.logPath, "/logs/job-1.log");
 
+    for (const phase of running.phases) {
+      ctx.store.updatePhase("job-1", phase.position, { status: "running" });
+      ctx.store.updatePhase("job-1", phase.position, { status: "succeeded" });
+    }
     const done = ctx.store.transition("job-1", "succeeded", { outcome: "success", reportPath: "/reports/job-1" });
     assert.ok(done.finishedAt && done.finishedAt > (done.startedAt as string));
     assert.equal(done.outcome, "success");
@@ -132,13 +195,18 @@ describe("SqliteJobStore.transition", () => {
     assert.equal(ctx.store.transition("job-1", "cancelled").status, "cancelled");
   });
 
+  it("fails a queued job whose commit is gone", () => {
+    ctx.store.create(newJob());
+    const failed = ctx.store.transition("job-1", "failed", { error: "commit no disponible" });
+    assert.deepEqual([failed.status, failed.outcome, failed.startedAt], ["failed", "failure", null]);
+  });
+
   it("rejects every move the state machine does not allow and leaves the job untouched", () => {
     ctx.store.create(newJob());
-    assert.throws(() => ctx.store.transition("job-1", "succeeded"), InvalidTransitionError);
-    ctx.store.transition("job-1", "running");
-    ctx.store.transition("job-1", "succeeded");
+    assert.throws(() => ctx.store.transition("job-1", "succeeded", { outcome: "success" }), InvalidTransitionError);
+    complete(ctx.store, "job-1");
     const before = ctx.store.get("job-1");
-    for (const to of JOB_STATUSES) assert.throws(() => ctx.store.transition("job-1", to), InvalidTransitionError, to);
+    for (const to of JOB_STATUSES) assert.throws(() => ctx.store.transition("job-1", to, { error: "x" }), InvalidTransitionError, to);
     assert.deepEqual(ctx.store.get("job-1"), before);
   });
 
@@ -156,36 +224,101 @@ describe("SqliteJobStore.transition", () => {
     assert.deepEqual(ctx.db.all("SELECT resource FROM locks").map((r) => r.resource), ["other"]);
   });
 
-  it("closes the phases that were still open", () => {
+  it("closes the phases that were still open, with a finish time", () => {
     ctx.store.create(newJob());
     ctx.store.transition("job-1", "running");
     ctx.store.updatePhase("job-1", 0, { status: "running" });
     const failed = ctx.store.transition("job-1", "failed", { error: "service restarted" });
     assert.deepEqual(failed.phases.map((p) => p.status), ["failed", "skipped"]);
-    assert.ok(failed.phases[0]?.finishedAt);
+    assert.ok(failed.phases.every((p) => p.finishedAt));
     assert.equal(failed.error, "service restarted");
   });
 
-  it("marks open phases of a cancelled job as cancelled", () => {
+  it("marks open phases of a cancelled job as cancelled, in the order they were cancelled", () => {
     ctx.store.create(newJob());
+    ctx.store.transition("job-1", "running");
+    ctx.store.updatePhase("job-1", 0, { status: "running" });
+    ctx.store.transition("job-1", "cancelling");
     assert.deepEqual(ctx.store.transition("job-1", "cancelled").phases.map((p) => p.status), ["cancelled", "cancelled"]);
+    ctx.store.create(newJob());
+    assert.deepEqual(ctx.store.transition("job-2", "cancelled").phases.map((p) => p.status), ["cancelled", "cancelled"]);
   });
 
-  it("is atomic: a rejected move changes nothing, not even the phases", () => {
+  it("changes nothing when the write fails halfway (status, phases and locks stay together)", () => {
     ctx.store.create(newJob());
+    ctx.store.transition("job-1", "running");
+    ctx.store.updatePhase("job-1", 0, { status: "running" });
+    ctx.db.run("INSERT INTO locks (resource, job_id) VALUES ('devices', 'job-1')");
     const before = ctx.store.get("job-1");
-    assert.throws(() => ctx.store.transition("job-1", "succeeded", { outcome: "success" }));
+
+    const faulty = storeOver(new FaultyDatabase(ctx.db, { failRun: (sql) => sql.startsWith("DELETE FROM locks") }));
+    assert.throws(() => faulty.transition("job-1", "failed", { error: "x" }), /injected/);
+
     assert.deepEqual(ctx.store.get("job-1"), before);
+    assert.equal(ctx.db.get("SELECT COUNT(*) AS n FROM locks")?.n, 1);
+  });
+
+  describe("details must fit the new status", () => {
+    beforeEach(() => {
+      ctx.store.create(newJob());
+      ctx.store.transition("job-1", "running");
+      for (const phase of [0, 1]) {
+        ctx.store.updatePhase("job-1", phase, { status: "running" });
+        ctx.store.updatePhase("job-1", phase, { status: "succeeded" });
+      }
+    });
+
+    it("succeeded needs outcome success or warning", () => {
+      assert.throws(() => ctx.store.transition("job-1", "succeeded"), InvalidDetailsError);
+      assert.throws(() => ctx.store.transition("job-1", "succeeded", { outcome: "failure" }), InvalidDetailsError);
+      assert.equal(ctx.store.transition("job-1", "succeeded", { outcome: "warning" }).outcome, "warning");
+    });
+
+    it("failed needs an error and can only be a failure", () => {
+      assert.throws(() => ctx.store.transition("job-1", "failed"), InvalidDetailsError);
+      assert.throws(() => ctx.store.transition("job-1", "failed", { error: "x", outcome: "success" }), InvalidDetailsError);
+      const failed = ctx.store.transition("job-1", "failed", { error: "x" });
+      assert.deepEqual([failed.outcome, failed.error], ["failure", "x"]);
+    });
+
+    it("other statuses take no outcome", () => {
+      assert.throws(() => ctx.store.transition("job-1", "cancelling", { outcome: "failure" }), InvalidDetailsError);
+    });
+  });
+
+  it("does not overwrite the first error with a later one", () => {
+    ctx.store.create(newJob());
+    ctx.store.transition("job-1", "running");
+    ctx.db.run("UPDATE jobs SET error = 'root cause' WHERE id = 'job-1'");
+    assert.equal(ctx.store.transition("job-1", "failed", { error: "consequence" }).error, "root cause");
+    assert.equal(ctx.store.get("job-1")?.outcome, "failure");
+  });
+
+  it("does not let a job succeed while a phase is still open", () => {
+    ctx.store.create(newJob());
+    ctx.store.transition("job-1", "running");
+    ctx.store.updatePhase("job-1", 0, { status: "running" });
+    ctx.store.updatePhase("job-1", 0, { status: "succeeded" });
+    assert.throws(() => ctx.store.transition("job-1", "succeeded", { outcome: "success" }), InvalidDetailsError); // phase 1 pending
+    assert.equal(ctx.store.get("job-1")?.status, "running");
+  });
+
+  it("lets a job without phases succeed", () => {
+    ctx.store.create(newJob({ phases: [] }));
+    ctx.store.transition("job-1", "running");
+    assert.equal(ctx.store.transition("job-1", "succeeded", { outcome: "success" }).status, "succeeded");
   });
 });
 
 describe("SqliteJobStore.updatePhase", () => {
   let ctx: ReturnType<typeof setup>;
-  beforeEach(() => (ctx = setup()));
-
-  it("records progress, exit code, signal and outcome of a phase", () => {
+  beforeEach(() => {
+    ctx = setup();
     ctx.store.create(newJob());
     ctx.store.transition("job-1", "running");
+  });
+
+  it("records progress, exit code, signal and outcome of a phase", () => {
     const started = ctx.store.updatePhase("job-1", 0, { status: "running" });
     assert.ok(started.phases[0]?.startedAt);
     assert.equal(started.phases[0]?.finishedAt, null);
@@ -199,14 +332,34 @@ describe("SqliteJobStore.updatePhase", () => {
     assert.equal(finished.phases[1]?.status, "pending");
   });
 
+  it("keeps what was recorded when a later update leaves a field out", () => {
+    ctx.store.updatePhase("job-1", 0, { status: "running", exitCode: 3, signal: "SIGTERM" });
+    const later = ctx.store.updatePhase("job-1", 0, { status: "failed" });
+    assert.deepEqual([later.phases[0]?.exitCode, later.phases[0]?.signal], [3, "SIGTERM"]);
+  });
+
   it("keeps the first start time when a phase is reported running twice", () => {
-    ctx.store.create(newJob());
     const first = ctx.store.updatePhase("job-1", 0, { status: "running" }).phases[0]?.startedAt;
     assert.equal(ctx.store.updatePhase("job-1", 0, { status: "running" }).phases[0]?.startedAt, first);
   });
 
-  it("rejects an unknown job or phase", () => {
+  it("never moves a phase backwards or skips running", () => {
+    ctx.store.updatePhase("job-1", 0, { status: "running" });
+    ctx.store.updatePhase("job-1", 0, { status: "succeeded" });
+    assert.throws(() => ctx.store.updatePhase("job-1", 0, { status: "running" }), InvalidPhaseTransitionError);
+    assert.throws(() => ctx.store.updatePhase("job-1", 1, { status: "succeeded" }), InvalidPhaseTransitionError);
+  });
+
+  it("is refused unless the job is running or cancelling", () => {
     ctx.store.create(newJob());
+    assert.throws(() => ctx.store.updatePhase("job-2", 0, { status: "running" }), JobNotActiveError);
+    ctx.store.transition("job-1", "cancelling");
+    assert.doesNotThrow(() => ctx.store.updatePhase("job-1", 0, { status: "running" }));
+    ctx.store.transition("job-1", "cancelled");
+    assert.throws(() => ctx.store.updatePhase("job-1", 1, { status: "running" }), JobNotActiveError);
+  });
+
+  it("rejects an unknown job or phase", () => {
     assert.throws(() => ctx.store.updatePhase("ghost", 0, { status: "running" }), JobNotFoundError);
     assert.throws(() => ctx.store.updatePhase("job-1", 9, { status: "running" }), RangeError);
   });
@@ -220,8 +373,7 @@ describe("SqliteJobStore.list", () => {
     ctx.store.create(newJob({ ref: "iteration_1", target: "checkout" })); // job-2
     ctx.store.create(newJob({ ref: "iteration_2", target: "login" })); // job-3
     ctx.store.create(newJob({ project: "cucumber", ref: "main", target: "login" })); // job-4
-    ctx.store.transition("job-1", "running");
-    ctx.store.transition("job-1", "succeeded");
+    complete(ctx.store, "job-1");
   });
 
   const ids = (filter = {}, page = {}) => ctx.store.list(filter, page).jobs.map((j) => j.id);
@@ -263,9 +415,11 @@ describe("SqliteJobStore.list", () => {
     assert.equal(ctx.store.list({}, { limit: 4 }).nextCursor, null);
   });
 
-  it("clamps absurd page sizes", () => {
+  it("clamps absurd page sizes and survives a page size that is not a number", () => {
     assert.equal(ctx.store.list({}, { limit: 0 }).jobs.length, 1);
     assert.equal(ctx.store.list({}, { limit: 100000 }).jobs.length, 4);
+    assert.equal(ctx.store.list({}, { limit: Number.NaN }).jobs.length, 4);
+    assert.equal(ctx.store.list({}, { limit: Number.POSITIVE_INFINITY }).jobs.length, 4);
   });
 
   it("treats filter values as data, never as SQL", () => {
@@ -292,14 +446,27 @@ describe("SqliteJobStore.listByStatus and listActive", () => {
 });
 
 describe("SqliteJobStore.setPid", () => {
-  it("stores and clears the process id, and rejects an unknown job", () => {
+  it("stores and clears the process id of a live job", () => {
     const { store } = setup();
     store.create(newJob());
+    store.transition("job-1", "running");
     store.setPid("job-1", 99);
     assert.equal(store.get("job-1")?.pid, 99);
     store.setPid("job-1", null);
     assert.equal(store.get("job-1")?.pid, null);
-    assert.throws(() => store.setPid("ghost", 1), JobNotFoundError);
+  });
+
+  it("refuses a queued or finished job, so a stale pid can never be killed after a restart", () => {
+    const { store } = setup();
+    store.create(newJob());
+    assert.throws(() => store.setPid("job-1", 5), JobNotActiveError);
+    complete(store, "job-1");
+    assert.throws(() => store.setPid("job-1", 5), JobNotActiveError);
+    assert.equal(store.get("job-1")?.pid, null);
+  });
+
+  it("rejects an unknown job", () => {
+    assert.throws(() => setup().store.setPid("ghost", 1), JobNotFoundError);
   });
 });
 
@@ -317,7 +484,7 @@ describe("a restart", () => {
     for (let i = 0; i < 3; i++) before.store.create(newJob({ target: `scenario-${i}` }));
     const [first, second] = before.store.listByStatus("queued");
     before.store.transition(first!.id, "running", { pid: 1234 });
-    before.store.transition(first!.id, "succeeded", { outcome: "success" });
+    complete(before.store, first!.id);
     before.store.transition(second!.id, "running", { pid: 5678 });
     before.db.close(); // the "crash"
 

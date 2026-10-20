@@ -18,6 +18,24 @@ const config: ServiceConfig = {
   detox: undefined,
 };
 
+describe("shutdown", () => {
+  it("runs the registered callbacks once, even if one of them throws", async () => {
+    const calls: string[] = [];
+    const app = await createApp(config, {
+      jobs: new SqliteJobStore(openMemoryDatabase()),
+      onShutdown: [
+        () => {
+          calls.push("first");
+          throw new Error("boom");
+        },
+        () => calls.push("second"),
+      ],
+    });
+    await app.close();
+    assert.deepEqual(calls, ["first", "second"]);
+  });
+});
+
 describe("HTTP API", () => {
   let app: INestApplication;
   let base: string;

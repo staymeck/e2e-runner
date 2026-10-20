@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { FaultyDatabase } from "./helpers/faulty-database";
 import { SqliteDatabase } from "../src/db/database";
 import { migrations } from "../src/db/migrations";
 import { MigrationError, Migrator, type Migration } from "../src/db/migrator";
@@ -47,6 +49,14 @@ describe("Migrator", () => {
     assert.throws(() => new Migrator(db, [first, first]), MigrationError);
   });
 
+  it("skips a migration another process applied between the version check and the write", () => {
+    const db = new SqliteDatabase(":memory:");
+    new Migrator(db, [first]).migrate();
+    let staleReads = 1;
+    const stale = new FaultyDatabase(db, { fakeGet: (sql) => (sql.includes("MAX(version)") && staleReads-- > 0 ? { version: 0 } : undefined) });
+    assert.deepEqual(new Migrator(stale, [first]).migrate(), []); // without the re-check: "table a already exists"
+  });
+
   it("ships migrations that are numbered without gaps", () => {
     migrations.forEach((migration, index) => assert.equal(migration.version, index + 1));
   });
@@ -62,6 +72,22 @@ describe("openDatabase", () => {
       assert.equal(db.get("PRAGMA journal_mode")?.journal_mode, "wal");
     } finally {
       db.close();
+    }
+  });
+
+  it("makes a second writer wait, then fail with a clear busy error instead of hanging", () => {
+    const file = path.join(root, "busy", "service.sqlite");
+    fs.mkdirSync(path.dirname(file));
+    const holder = new SqliteDatabase(file, { busyTimeoutMs: 50 });
+    const waiter = new SqliteDatabase(file, { busyTimeoutMs: 50 });
+    try {
+      holder.exec("BEGIN IMMEDIATE");
+      assert.throws(() => waiter.transaction(() => 1), /locked|busy/i);
+      holder.exec("ROLLBACK");
+      assert.equal(waiter.transaction(() => 1), 1, "it works again once the first writer is done");
+    } finally {
+      holder.close();
+      waiter.close();
     }
   });
 

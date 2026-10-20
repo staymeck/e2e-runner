@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
+  InvalidDetailsError,
+  InvalidPhaseTransitionError,
   InvalidTransitionError,
+  JobNotActiveError,
   JobNotFoundError,
+  RetryNotAllowedError,
+  canPhaseTransition,
   canTransition,
+  isActive,
   isTerminal,
   type Job,
   type JobFilter,
@@ -67,6 +73,11 @@ function toJob(row: Row, phases: readonly JobPhase[]): Job {
   };
 }
 
+function pageSize(requested: number | undefined): number {
+  if (requested === undefined || !Number.isFinite(requested)) return DEFAULT_PAGE_SIZE;
+  return Math.min(Math.max(Math.trunc(requested), 1), MAX_PAGE_SIZE);
+}
+
 /** Jobs stored in SQLite. Every write that touches more than one row is one transaction. */
 export class SqliteJobStore implements JobStore {
   private readonly now: () => Date;
@@ -84,6 +95,7 @@ export class SqliteJobStore implements JobStore {
     const id = this.newId();
     const createdAt = this.now().toISOString();
     this.db.transaction(() => {
+      if (job.retryOf !== undefined) this.assertRetryable(job.retryOf);
       this.db.run(
         `INSERT INTO jobs (id, project, kind, status, ref, sha, target, params, locks, retry_of, created_at)
          VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
@@ -111,7 +123,7 @@ export class SqliteJobStore implements JobStore {
   }
 
   list(filter: JobFilter = {}, page: JobPage = {}): JobList {
-    const limit = Math.min(Math.max(Math.trunc(page.limit ?? DEFAULT_PAGE_SIZE), 1), MAX_PAGE_SIZE);
+    const limit = pageSize(page.limit);
     const where: string[] = [];
     const params: SqlValue[] = [];
     const require = (clause: string, ...values: SqlValue[]): void => {
@@ -131,8 +143,7 @@ export class SqliteJobStore implements JobStore {
     // one extra row tells whether there is a next page without a second query
     const rows = this.db.all(`SELECT * FROM jobs ${clause} ORDER BY seq DESC LIMIT ?`, ...params, limit + 1);
     const hasMore = rows.length > limit;
-    const pageRows = rows.slice(0, limit);
-    const jobs = this.hydrate(pageRows);
+    const jobs = this.hydrate(rows.slice(0, limit));
     return { jobs, nextCursor: hasMore ? (jobs[jobs.length - 1]?.seq ?? null) : null };
   }
 
@@ -147,19 +158,21 @@ export class SqliteJobStore implements JobStore {
   transition(id: string, to: JobStatus, details: TransitionDetails = {}): Job {
     const at = this.now().toISOString();
     this.db.transaction(() => {
-      const row = this.db.get("SELECT status, pid FROM jobs WHERE id = ?", id);
+      const row = this.db.get("SELECT status, pid, error FROM jobs WHERE id = ?", id);
       if (!row) throw new JobNotFoundError(id);
       const from = row.status as JobStatus;
       if (!canTransition(from, to)) throw new InvalidTransitionError(id, from, to);
+      this.checkDetails(id, to, details, row.error as string | null);
 
       const terminal = isTerminal(to);
+      const keptPid = details.pid === undefined ? ((row.pid as number | null) ?? null) : details.pid;
       this.db.run(
         `UPDATE jobs SET status = ?,
            started_at = COALESCE(started_at, ?),
            finished_at = ?,
            cancel_requested_at = COALESCE(cancel_requested_at, ?),
-           outcome = COALESCE(?, outcome),
-           error = COALESCE(?, error),
+           outcome = COALESCE(outcome, ?),
+           error = COALESCE(error, ?),
            pid = ?,
            log_path = COALESCE(?, log_path),
            report_path = COALESCE(?, report_path)
@@ -168,9 +181,9 @@ export class SqliteJobStore implements JobStore {
         to === "running" ? at : null,
         terminal ? at : null,
         to === "cancelling" ? at : null,
-        details.outcome ?? null,
+        to === "failed" ? "failure" : (details.outcome ?? null),
         details.error ?? null,
-        terminal ? null : details.pid === undefined ? ((row.pid as number | null | undefined) ?? null) : details.pid,
+        terminal ? null : keptPid,
         details.logPath ?? null,
         details.reportPath ?? null,
         id,
@@ -188,11 +201,20 @@ export class SqliteJobStore implements JobStore {
   updatePhase(id: string, position: number, update: PhaseUpdate): Job {
     const at = this.now().toISOString();
     this.db.transaction(() => {
-      const result = this.db.run(
+      const job = this.db.get("SELECT status FROM jobs WHERE id = ?", id);
+      if (!job) throw new JobNotFoundError(id);
+      if (!isActive(job.status as JobStatus)) throw new JobNotActiveError(id, job.status as JobStatus);
+
+      const phase = this.db.get("SELECT status FROM job_phases WHERE job_id = ? AND position = ?", id, position);
+      if (!phase) throw new RangeError(`Job ${id} has no phase at position ${position}`);
+      const from = phase.status as PhaseStatus;
+      if (!canPhaseTransition(from, update.status)) throw new InvalidPhaseTransitionError(id, position, from, update.status);
+
+      this.db.run(
         `UPDATE job_phases SET status = ?,
-           exit_code = ?, signal = ?, outcome = ?,
+           exit_code = COALESCE(?, exit_code), signal = COALESCE(?, signal), outcome = COALESCE(?, outcome),
            started_at = CASE WHEN ? = 'running' THEN COALESCE(started_at, ?) ELSE started_at END,
-           finished_at = CASE WHEN ? THEN ? ELSE finished_at END
+           finished_at = CASE WHEN ? = 1 THEN ? ELSE finished_at END
          WHERE job_id = ? AND position = ?`,
         update.status,
         update.exitCode ?? null,
@@ -205,24 +227,45 @@ export class SqliteJobStore implements JobStore {
         id,
         position,
       );
-      if (result.changes === 0) {
-        if (!this.db.get("SELECT 1 AS found FROM jobs WHERE id = ?", id)) throw new JobNotFoundError(id);
-        throw new RangeError(`Job ${id} has no phase at position ${position}`);
-      }
     });
     return this.require(id);
   }
 
   setPid(id: string, pid: number | null): void {
-    if (this.db.run("UPDATE jobs SET pid = ? WHERE id = ?", pid, id).changes === 0) throw new JobNotFoundError(id);
+    // Only a live job may carry a pid: a stale one could make a restart kill someone else's process.
+    const result = this.db.run("UPDATE jobs SET pid = ? WHERE id = ? AND status IN ('running', 'cancelling')", pid, id);
+    if (result.changes > 0) return;
+    const job = this.db.get("SELECT status FROM jobs WHERE id = ?", id);
+    if (!job) throw new JobNotFoundError(id);
+    throw new JobNotActiveError(id, job.status as JobStatus);
+  }
+
+  private assertRetryable(originalId: string): void {
+    const original = this.db.get("SELECT status FROM jobs WHERE id = ?", originalId);
+    if (!original) throw new RetryNotAllowedError(originalId, "missing");
+    if (!isTerminal(original.status as JobStatus)) throw new RetryNotAllowedError(originalId, original.status as JobStatus);
+  }
+
+  /** The final status must be backed by the data that explains it. */
+  private checkDetails(id: string, to: JobStatus, details: TransitionDetails, recordedError: string | null): void {
+    const { outcome, error } = details;
+    if (to === "succeeded") {
+      if (outcome !== "success" && outcome !== "warning") throw new InvalidDetailsError(id, "succeeded needs outcome success or warning");
+      const open = this.db.get("SELECT COUNT(*) AS n FROM job_phases WHERE job_id = ? AND status IN ('pending', 'running')", id);
+      if (Number(open?.n) > 0) throw new InvalidDetailsError(id, "succeeded while a phase is still pending or running");
+    } else if (to === "failed") {
+      if (outcome !== undefined && outcome !== "failure") throw new InvalidDetailsError(id, "failed can only have outcome failure");
+      if (!error && !recordedError) throw new InvalidDetailsError(id, "failed needs an error");
+    } else if (outcome !== undefined) {
+      throw new InvalidDetailsError(id, `outcome does not apply to ${to}`);
+    }
   }
 
   /** A phase still open when the job ends did not finish normally: record how. */
   private closePhases(id: string, finalStatus: JobStatus, at: string): void {
-    const unfinishedRunning = finalStatus === "cancelled" ? "cancelled" : "failed";
-    const unfinishedPending = finalStatus === "cancelled" ? "cancelled" : "skipped";
-    this.db.run("UPDATE job_phases SET status = ?, finished_at = ? WHERE job_id = ? AND status = 'running'", unfinishedRunning, at, id);
-    this.db.run("UPDATE job_phases SET status = ? WHERE job_id = ? AND status = 'pending'", unfinishedPending, id);
+    const cancelled = finalStatus === "cancelled";
+    this.db.run("UPDATE job_phases SET status = ?, finished_at = ? WHERE job_id = ? AND status = 'running'", cancelled ? "cancelled" : "failed", at, id);
+    this.db.run("UPDATE job_phases SET status = ?, finished_at = ? WHERE job_id = ? AND status = 'pending'", cancelled ? "cancelled" : "skipped", at, id);
   }
 
   private require(id: string): Job {

@@ -1,6 +1,6 @@
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 
-export type SqlValue = SQLInputValue;
+export type SqlValue = string | number | bigint | null | Uint8Array;
 export type Row = Record<string, unknown>;
 
 /**
@@ -17,17 +17,32 @@ export interface Database {
   close(): void;
 }
 
-const BUSY_TIMEOUT_MS = 5000;
+export interface SqliteOptions {
+  /** How long a writer waits for another one before failing with SQLITE_BUSY. */
+  readonly busyTimeoutMs?: number;
+}
+
+const DEFAULT_BUSY_TIMEOUT_MS = 5000;
 
 export class SqliteDatabase implements Database {
   private readonly db: DatabaseSync;
 
   /** @param file path of the database file, or ":memory:" (tests). */
-  constructor(file: string) {
+  constructor(file: string, options: SqliteOptions = {}) {
     this.db = new DatabaseSync(file);
-    this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    this.db.exec(`PRAGMA busy_timeout = ${Math.trunc(options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS)}`);
     this.db.exec("PRAGMA foreign_keys = ON");
-    if (file !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
+    if (file !== ":memory:") this.enableWriteAheadLog(file);
+  }
+
+  /** Readers must not block the runner's writes, which is what WAL gives; refuse to run without it. */
+  private enableWriteAheadLog(file: string): void {
+    const mode = this.db.prepare("PRAGMA journal_mode = WAL").get() as { journal_mode?: string } | undefined;
+    if (mode?.journal_mode?.toLowerCase() !== "wal") {
+      this.db.close();
+      throw new Error(`The filesystem of ${file} does not support SQLite WAL mode (got "${mode?.journal_mode}"); use a local disk for E2E_SERVICE_DATA_DIR`);
+    }
+    this.db.exec("PRAGMA synchronous = NORMAL");
   }
 
   exec(sql: string): void {
@@ -55,7 +70,12 @@ export class SqliteDatabase implements Database {
       this.db.exec("COMMIT");
       return result;
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      try {
+        // SQLite may already have rolled back (e.g. disk full): never let that hide the real error
+        if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      } catch {
+        /* the original error is the one worth reporting */
+      }
       throw error;
     }
   }

@@ -28,7 +28,7 @@ export class Migrator {
   /** Brings the schema to the latest version and returns the versions it applied. */
   migrate(): number[] {
     this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
-    const current = Number(this.db.get("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")?.version ?? 0);
+    const current = this.currentVersion();
     if (current > this.migrations.length) {
       throw new MigrationError(
         `The database is at schema version ${current} but this build only knows ${this.migrations.length}: refusing to run an older service on a newer database`,
@@ -36,12 +36,19 @@ export class Migrator {
     }
     const applied: number[] = [];
     for (const migration of this.migrations.slice(current)) {
-      this.db.transaction(() => {
+      const done = this.db.transaction(() => {
+        // Checked again under the write lock: another process starting at the same time may have applied it.
+        if (this.currentVersion() >= migration.version) return false;
         this.db.exec(migration.sql);
         this.db.run("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", migration.version, this.now().toISOString());
+        return true;
       });
-      applied.push(migration.version);
+      if (done) applied.push(migration.version);
     }
     return applied;
+  }
+
+  private currentVersion(): number {
+    return Number(this.db.get("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")?.version ?? 0);
   }
 }

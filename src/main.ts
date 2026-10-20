@@ -10,9 +10,8 @@ async function main(): Promise<void> {
   const config = loadConfig(process.env);
 
   const db = openDatabase(config.dataDir);
-  process.once("exit", () => db.close());
 
-  const app = await createApp(config, { jobs: new SqliteJobStore(db) }, new PinoNestLogger(logger));
+  const app = await createApp(config, { jobs: new SqliteJobStore(db), onShutdown: [() => db.close()] }, new PinoNestLogger(logger));
   await app.listen(config.server.port, config.server.host);
   logger.info({ host: config.server.host, port: config.server.port, projects: config.projects.map((p) => p.id) }, "e2e-runner listening");
 }
