@@ -1,0 +1,130 @@
+export type JobStatus = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
+export type PhaseStatus = "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+export type Outcome = "success" | "warning" | "failure";
+
+export const JOB_STATUSES: readonly JobStatus[] = ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"];
+
+const TRANSITIONS: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
+  queued: ["running", "cancelled"],
+  running: ["succeeded", "failed", "cancelling"],
+  cancelling: ["cancelled", "failed"],
+  succeeded: [],
+  failed: [],
+  cancelled: [],
+};
+
+export function canTransition(from: JobStatus, to: JobStatus): boolean {
+  return TRANSITIONS[from].includes(to);
+}
+
+export function isTerminal(status: JobStatus): boolean {
+  return TRANSITIONS[status].length === 0;
+}
+
+/** A job in one of these states holds (or is about to hold) its resources. */
+export function isActive(status: JobStatus): boolean {
+  return status === "running" || status === "cancelling";
+}
+
+export interface JobPhase {
+  readonly position: number;
+  readonly name: string;
+  readonly status: PhaseStatus;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly outcome: Outcome | null;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+}
+
+export interface Job {
+  /** Arrival order; unique and increasing, unlike timestamps. */
+  readonly seq: number;
+  readonly id: string;
+  readonly project: string;
+  readonly kind: string;
+  readonly status: JobStatus;
+  readonly ref: string;
+  /** The commit pinned when the job was queued. */
+  readonly sha: string;
+  readonly target: string;
+  readonly params: unknown;
+  /** Resources the job needs, fixed when it was queued. */
+  readonly locks: readonly string[];
+  readonly retryOf: string | null;
+  readonly createdAt: string;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly cancelRequestedAt: string | null;
+  readonly outcome: Outcome | null;
+  readonly error: string | null;
+  /** Root of the job's process tree, kept so a crashed service can clean it up. */
+  readonly pid: number | null;
+  readonly logPath: string | null;
+  readonly reportPath: string | null;
+  readonly phases: readonly JobPhase[];
+}
+
+export interface NewJob {
+  readonly project: string;
+  readonly kind: string;
+  readonly ref: string;
+  readonly sha: string;
+  readonly target: string;
+  readonly params: unknown;
+  readonly locks: readonly string[];
+  readonly phases: readonly string[];
+  readonly retryOf?: string;
+}
+
+export interface JobFilter {
+  readonly project?: string;
+  readonly ref?: string;
+  readonly target?: string;
+  readonly statuses?: readonly JobStatus[];
+}
+
+export interface JobPage {
+  readonly limit?: number;
+  /** Return jobs older than this `seq` (the `nextCursor` of the previous page). */
+  readonly before?: number;
+}
+
+export interface JobList {
+  readonly jobs: readonly Job[];
+  readonly nextCursor: number | null;
+}
+
+/** What may change when a job moves to a new status. */
+export interface TransitionDetails {
+  readonly outcome?: Outcome;
+  readonly error?: string;
+  readonly pid?: number | null;
+  readonly logPath?: string;
+  readonly reportPath?: string;
+}
+
+export interface PhaseUpdate {
+  readonly status: PhaseStatus;
+  readonly exitCode?: number | null;
+  readonly signal?: string | null;
+  readonly outcome?: Outcome | null;
+}
+
+export class JobNotFoundError extends Error {
+  constructor(readonly id: string) {
+    super(`Job not found: ${id}`);
+    this.name = "JobNotFoundError";
+  }
+}
+
+export class InvalidTransitionError extends Error {
+  constructor(
+    readonly id: string,
+    readonly from: JobStatus,
+    readonly to: JobStatus,
+  ) {
+    super(`Job ${id} cannot go from ${from} to ${to}`);
+    this.name = "InvalidTransitionError";
+  }
+}
