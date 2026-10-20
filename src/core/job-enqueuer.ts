@@ -39,6 +39,7 @@ export class JobEnqueuer {
       ...(request.retryOf === undefined ? {} : { retryOf: request.retryOf }),
     });
     this.listener.kick();
-    return job;
+    // The queue may have started it already: return what is true now, not the snapshot from creation.
+    return this.store.get(job.id) ?? job;
   }
 }

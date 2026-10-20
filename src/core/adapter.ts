@@ -45,11 +45,36 @@ export interface RunExecutor {
   cleanup(jobId: string, leftoverPid: number | null): Promise<void>;
 }
 
+/** Turns a branch name into the commit a job will run, so what was seen when queueing is what runs. */
+export interface RefPinner {
+  /**
+   * Resolves an already-allowed branch to its commit (40 hex characters) and keeps that commit from
+   * being garbage collected while jobs may still need it. Throws RefNotFoundError if it does not exist.
+   */
+  pin(ref: string): Promise<string>;
+  /** Undoes a `pin` whose job was never created. Idempotent; must not throw for an unknown commit. */
+  release(sha: string): Promise<void>;
+}
+
+export interface JobRequestInput {
+  readonly kind: string;
+  readonly target: string;
+  readonly params: unknown;
+}
+
 export interface ProjectAdapter {
   readonly id: string;
   /** Resources every job of this project needs exclusively (e.g. `devices`). */
   readonly locks: readonly string[];
+  /** Kinds of job it can run; the first one is the default. */
+  readonly kinds: readonly string[];
+  readonly refs: RefPinner;
   readonly executor: RunExecutor;
+  /**
+   * The project's own check of a request, with a strict schema (unknown keys rejected). Returns the
+   * parameters to store. Throws InvalidJobRequestError.
+   */
+  validateRequest(request: JobRequestInput): unknown;
 }
 
 export class UnknownProjectError extends Error {

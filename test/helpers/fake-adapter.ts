@@ -1,4 +1,5 @@
-import type { PhaseResult, PhaseRun, ProjectAdapter, RunContext, RunExecutor } from "../../src/core/adapter";
+import type { JobRequestInput, PhaseResult, PhaseRun, ProjectAdapter, RefPinner, RunContext, RunExecutor } from "../../src/core/adapter";
+import { InvalidJobRequestError, RefNotFoundError } from "../../src/core/job-request";
 
 interface Pending {
   readonly resolve: (result: PhaseResult) => void;
@@ -85,6 +86,53 @@ export class FakeExecutor implements RunExecutor {
   }
 }
 
-export function fakeAdapter(id: string, locks: readonly string[], executor: FakeExecutor = new FakeExecutor()): ProjectAdapter & { executor: FakeExecutor } {
-  return { id, locks, executor };
+/** Branch name -> commit. A branch that is not in the table does not exist. */
+export class FakeRefs implements RefPinner {
+  readonly pinned: string[] = [];
+  readonly released: string[] = [];
+
+  constructor(readonly commits: Record<string, string> = {}) {}
+
+  async pin(ref: string): Promise<string> {
+    const sha = this.commits[ref];
+    if (!sha) throw new RefNotFoundError(ref);
+    this.pinned.push(ref);
+    return sha;
+  }
+
+  async release(sha: string): Promise<void> {
+    this.released.push(sha);
+  }
+}
+
+export const SHA_MAIN = "a".repeat(40);
+
+export interface FakeAdapter extends ProjectAdapter {
+  readonly executor: FakeExecutor;
+  readonly refs: FakeRefs;
+}
+
+export function fakeAdapter(
+  id: string,
+  locks: readonly string[],
+  executor: FakeExecutor = new FakeExecutor(),
+  refs: FakeRefs = new FakeRefs({ main: SHA_MAIN, iteration_1: "b".repeat(40), "iteration_2": "c".repeat(40) }),
+): FakeAdapter {
+  return {
+    id,
+    locks,
+    kinds: ["run", "build"],
+    refs,
+    executor,
+    /** Accepts `{ retries: number }` only, like a strict adapter schema would. */
+    validateRequest({ params }: JobRequestInput): unknown {
+      if (params === null) return null;
+      if (typeof params !== "object" || Array.isArray(params)) throw new InvalidJobRequestError("params must be an object");
+      const entries = Object.entries(params as Record<string, unknown>);
+      for (const [key, value] of entries) {
+        if (key !== "retries" || typeof value !== "number") throw new InvalidJobRequestError(`unknown or invalid parameter "${key}"`);
+      }
+      return params;
+    },
+  };
 }
