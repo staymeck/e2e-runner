@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { createApp } from "./app";
 import { loadConfig } from "./config/load-config";
-import { ConfigError } from "./config/problems";
+import { ConfigError } from "./core/problems";
 import { PinoNestLogger, createLogger } from "./logging/logger";
 
 async function main(): Promise<void> {

@@ -28,14 +28,18 @@ lista todos los problemas a la vez.
 | `E2E_SERVICE_API_KEY` | sí | Clave de la API (16 caracteres o más). No hay modo abierto |
 | `E2E_SERVICE_API_KEY_NEXT` | no | Segunda clave aceptada mientras se rota la primera |
 | `E2E_SERVICE_DATA_DIR` | sí | Ruta absoluta: base SQLite, logs y reportes |
-| `E2E_SERVICE_CONFIG` | sí | Ruta del JSON de proyectos |
+| `E2E_SERVICE_CONFIG` | sí | Ruta absoluta del JSON de proyectos |
 | `E2E_SERVICE_HOST` / `E2E_SERVICE_PORT` | no | Por defecto `127.0.0.1:8090` |
 | `E2E_SERVICE_LOG_LEVEL` | no | Nivel de pino (`info`) |
 | `E2E_DETOX_RUNNER_DIR` | con un proyecto `detox` | Carpeta donde corren los jobs |
 | `E2E_DETOX_INFO_DIR` | con un proyecto `detox` | Carpeta para consultar ramas y escenarios |
 
 Las dos carpetas de Detox deben existir, ser rutas absolutas y **distintas** (no la misma, ni enlaces a la misma, ni una
-dentro de la otra).
+dentro de la otra). `E2E_SERVICE_DATA_DIR` tampoco puede estar dentro de ninguna de las dos, ni contenerlas: un `checkout`
+o un `git clean` borraría la base de datos.
+
+En el JSON, `repo` acepta `ssh://`, `https://`, `file://` o `usuario@host:ruta`; las ramas y patrones se validan como
+nombres de rama de git, y una clave desconocida en un proyecto se rechaza.
 
 Ejemplo de `E2E_SERVICE_CONFIG`:
 
