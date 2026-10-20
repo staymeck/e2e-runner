@@ -269,8 +269,30 @@ describe("concurrency", () => {
       ctx.catalog.refs(),
       ctx.catalog.fetch(),
       ctx.catalog.browse("main"),
+      ctx.catalog.withBrowseLock(async (dir) => dir),
     ]);
-    assert.equal(results.length, 7);
+    assert.equal(results.length, 8);
     assert.equal(ctx.fixture.headOf(ctx.fixture.runnerDir), sha);
+  });
+});
+
+describe("withBrowseLock", () => {
+  it("reports the browsing folder's own path, never the run folder's", async () => {
+    const { catalog, fixture } = setup();
+    await catalog.fetch();
+    await catalog.browse("main");
+    assert.equal(await catalog.withBrowseLock(async (dir) => dir), fixture.infoDir);
+  });
+
+  it("holds the same lock fetch() and browse() do: queued behind one, ahead of the next, never interleaved", async () => {
+    const { catalog } = setup();
+    const order: string[] = [];
+    const slowFetch = catalog.fetch().then(() => order.push("fetch"));
+    const lockRead = catalog.withBrowseLock(async () => {
+      order.push("withBrowseLock");
+    });
+    const browse = catalog.browse("main").then(() => order.push("browse"));
+    await Promise.all([slowFetch, lockRead, browse]);
+    assert.deepEqual(order, ["fetch", "withBrowseLock", "browse"], "each waited for the one queued ahead of it, in call order");
   });
 });
