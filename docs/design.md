@@ -141,17 +141,25 @@ Reglas:
    del mismo repositorio (`git rev-parse --git-common-dir` idéntico, así un `fetch` sirve a las dos), y son
    **distintas**: se comparan rutas reales (`realpath`, sin distinguir mayúsculas donde el sistema no lo hace) y se
    rechaza que sean la misma, que una contenga a la otra o que sean enlaces a la misma carpeta.
-   `orch.rc.json` se exige en cada `prepareRun`/`browse` (depende del commit), no al arrancar.
+   También se comprueba que `origin` sea el repositorio configurado del proyecto y que cada carpeta tenga
+   `orch.rc.json` (en cada `prepareRun`/`browse` se vuelve a exigir, porque depende del commit).
 3. El commit se resuelve y se **fija al encolar** (`ref` -> `sha`). El job corre siempre con ese sha; reintentar usa el
-   mismo. Para que un `gc` o un force-push no lo borre, al fijarlo se crea `refs/e2e/jobs/<id>` y se elimina cuando
-   el job termina y deja de poder reintentarse (política de retención en STA-28).
-4. `resolve` solo acepta nombres de rama: valida con `git check-ref-format --branch`, aplica `allowedBranches` y
-   resuelve `refs/remotes/origin/<rama>^{commit}`. Etiquetas y shas directos no se aceptan como `ref`. Todos los
-   comandos git llevan `--end-of-options` antes de refs y el sha se vuelve a validar (`^[0-9a-f]{40}$`).
-5. `prepareRun(sha)` solo se ejecuta cuando el runner está libre: `checkout --detach -f`, `clean -fdx` (conservando
-   `node_modules` y `builds/`) y `npm ci` si cambió el hash del lockfile, falta `node_modules` o cambió la versión de
-   Node. `npm ci` ejecuta scripts del repositorio como el usuario del servicio: quien pueda subir a una rama permitida
-   puede ejecutar código en el host del lab; `allowedBranches` es un control de seguridad, no solo de comodidad.
+   mismo. Para que un `gc` o un force-push no lo borre, al fijarlo se crea `refs/e2e/pins/<sha>` (por commit, no por
+   job: varios jobs pueden compartirlo). `release(sha)` lo quita si el job no llegó a crearse y `prunePins(keep)`
+   libera todos los que ningún job necesita; la política de retención (cuánto tiempo se puede reintentar un job)
+   decide qué conjunto `keep` se pasa, y se cablea con el despliegue (STA-36).
+4. `resolve` solo acepta nombres de rama: valida la forma (como `check-ref-format`, sin `HEAD`), aplica
+   `allowedBranches` y resuelve `refs/remotes/origin/<rama>^{commit}`. Etiquetas, `HEAD` y shas directos no se aceptan
+   como `ref`. Un commit se vuelve a validar como `^[0-9a-f]{40}$` antes de cada comando git y los comandos se ejecutan
+   con la lista de argumentos, sin shell.
+5. `prepareRun(sha)` solo se ejecuta cuando el runner está libre: `checkout --detach --force`, `clean -fd` (se borran
+   las ediciones y los archivos sin seguimiento; los **ignorados**, como `node_modules`, `builds/`, `.env` y los
+   reportes, se conservan) y `npm ci` si cambió el hash del lockfile, falta `node_modules` o cambió la versión de
+   Node (la marca vive dentro de `node_modules`, así que borrarlo fuerza una instalación nueva; sin
+   `package-lock.json` se rechaza). `npm ci` ejecuta scripts del repositorio como el usuario del servicio: quien pueda
+   subir a una rama permitida puede ejecutar código en el host del lab; `allowedBranches` es un control de seguridad,
+   no solo de comodidad. Un commit que el repositorio no tiene (nunca se trajo, o se borró) falla con
+   `CommitUnavailableError` sin mover la carpeta.
 6. Todas las operaciones git sobre el repositorio compartido van detrás de **un mutex en el proceso**
    (`fetch`, `browse`, `prepareRun`, `pin`): comparten refs y paquetes y pueden pelear por `packed-refs.lock`.
 7. La carpeta de consulta puede cambiar de rama con un job corriendo: no comparten árbol de trabajo.

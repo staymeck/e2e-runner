@@ -166,7 +166,11 @@ export function loadConfig(env: NodeJS.ProcessEnv, readFile: ReadTextFile = read
   const projects = readProjects(env, readFile, problems);
 
   let detox: DetoxConfig | undefined;
-  if (projects.some((project) => project.adapter === DETOX_ADAPTER)) {
+  const detoxProjects = projects.filter((project) => project.adapter === DETOX_ADAPTER);
+  if (detoxProjects.length > 1) {
+    // the two folders come from the environment, so they can serve only one project
+    problems.add(`Only one project may use the "${DETOX_ADAPTER}" adapter (found: ${detoxProjects.map((p) => p.id).join(", ")})`);
+  } else if (detoxProjects.length === 1) {
     detox = loadDetoxConfig(env, dataDir, problems);
   }
 
