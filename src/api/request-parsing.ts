@@ -46,13 +46,20 @@ function integer(value: unknown, field: string, min: number): number | undefined
   return Number(raw);
 }
 
-/** Validates the query of GET /v1/jobs: filters, `limit` and the `before` cursor. */
+const KNOWN_QUERY_KEYS: readonly string[] = ["project", "ref", "target", "status", "limit", "before"];
+export const MAX_PAGE_SIZE = 200;
+
+/** Validates the query of GET /v1/jobs: filters, `limit` and the `before` cursor. Unknown keys are rejected, so a typo never returns everything. */
 export function parseList(query: Record<string, unknown>): { filter: JobFilter; page: JobPage } {
+  for (const key of Object.keys(query)) {
+    if (!KNOWN_QUERY_KEYS.includes(key)) throw new InvalidJobRequestError(`unknown query parameter "${key}"`);
+  }
   const project = one(query.project, "project");
   const ref = one(query.ref, "ref");
   const target = one(query.target, "target");
   const limit = integer(query.limit, "limit", 1);
   const before = integer(query.before, "before", 1);
+  if (limit !== undefined && limit > MAX_PAGE_SIZE) throw new InvalidJobRequestError(`limit must be at most ${MAX_PAGE_SIZE}`);
 
   const statuses = parseStatuses(query.status);
   return {

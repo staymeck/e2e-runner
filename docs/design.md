@@ -273,7 +273,15 @@ Errores: `{ statusCode, error, message }`.
 | 422 | `ref_not_found` | rama permitida que no existe (un `fetch` puede traerla) |
 | 500 | `internal_error` | cualquier otro; el detalle va al log, nunca al cliente |
 
-La respuesta de un job no incluye rutas del servidor (`log_path`, `report_path`) ni el `pid`.
+La respuesta de un job no incluye rutas del servidor (`log_path`, `report_path`) ni el `pid`. Los filtros de
+`GET /v1/jobs` son estrictos: una clave desconocida (`?stauts=queued`), un valor repetido o `limit` mayor de 200 dan
+400, en vez de devolver todos los jobs. Los mensajes de error de Nest y del analizador de JSON nunca se devuelven tal
+cual (pueden citar la petición): solo el texto estándar del código. Se comprueban por forma y no con `instanceof`,
+porque el adaptador HTTP se carga como módulo ES con su propia copia de `@nestjs/common`. El cuerpo se analiza antes de
+autenticar (máximo 64 KB, y nginx limita antes); una petición sin clave con JSON roto recibe 400 en vez de 401.
+
+Si `pin(ref)` tuvo éxito pero el job no llegó a crearse, el servicio llama a `release(sha)` para no dejar el commit
+protegido sin un job que lo use.
 
 ## 6. Seguridad
 

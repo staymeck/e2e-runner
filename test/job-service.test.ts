@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { UnknownProjectError } from "../src/core/adapter";
 import { JobAlreadyFinishedError, JobNotFoundError } from "../src/core/job";
 import { InvalidJobRequestError, RefNotAllowedError, RefNotFoundError } from "../src/core/job-request";
-import { FakeRefs, OK, SHA_MAIN, fakeAdapter } from "./helpers/fake-adapter";
+import { FakeExecutor, FakeRefs, OK, SHA_MAIN, fakeAdapter } from "./helpers/fake-adapter";
 import { buildService } from "./helpers/service";
 
 const nothingCreated = (ctx: ReturnType<typeof buildService>) => assert.equal(ctx.store.list().jobs.length, 0);
@@ -63,7 +63,7 @@ describe("JobService.submit", () => {
 
   it("refuses target names that are not scenario names", async () => {
     const ctx = buildService();
-    for (const target of ["", "-rf", "a b", "x;y", "a\nb", "$(id)", "a".repeat(201), "../x"]) {
+    for (const target of ["", "-rf", "a b", "x;y", "a\nb", "$(id)", "a".repeat(201), "../x", "a/../b", "a/.."]) {
       await assert.rejects(ctx.service.submit({ project: "detox", target }), InvalidJobRequestError, JSON.stringify(target));
     }
     nothingCreated(ctx);
@@ -88,6 +88,35 @@ describe("JobService.submit", () => {
     const ctx = buildService(fakeAdapter("detox", ["devices"], undefined, new FakeRefs({ main: "not-a-commit" })));
     await assert.rejects(ctx.service.submit({ project: "detox", ref: "main", target: "t" }), /invalid commit/);
     nothingCreated(ctx);
+  });
+
+  it("releases the commit it pinned when the job could not be created", async () => {
+    const executor = new FakeExecutor();
+    executor.plan = () => {
+      throw new Error("cannot plan");
+    };
+    const refs = new FakeRefs({ main: SHA_MAIN });
+    const ctx = buildService(fakeAdapter("detox", ["devices"], executor, refs));
+    await assert.rejects(ctx.service.submit({ project: "detox", ref: "main", target: "t" }), /cannot plan/);
+    assert.deepEqual(refs.released, [SHA_MAIN]);
+    nothingCreated(ctx);
+  });
+
+  it("does not release anything when the job was created", async () => {
+    const refs = new FakeRefs({ main: SHA_MAIN });
+    const ctx = buildService(fakeAdapter("detox", ["devices"], undefined, refs));
+    const job = await ctx.service.submit({ project: "detox", ref: "main", target: "t" });
+    assert.deepEqual(refs.released, []);
+    await ctx.adapter.executor.finish(job.id, OK);
+  });
+
+  it("is not stopped by a release that fails", async () => {
+    const refs = new FakeRefs({ main: "not-a-commit" });
+    refs.release = async () => {
+      throw new Error("release broke");
+    };
+    const ctx = buildService(fakeAdapter("detox", ["devices"], undefined, refs));
+    await assert.rejects(ctx.service.submit({ project: "detox", ref: "main", target: "t" }), /invalid commit/);
   });
 });
 

@@ -14,6 +14,7 @@ export async function createApp(
   logger: LoggerService | false = false,
 ): Promise<INestApplication> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(config, dependencies), { logger, bodyParser: false });
+  app.disable("x-powered-by");
   app.useBodyParser("json", { limit: MAX_BODY });
   app.enableShutdownHooks();
   return app;

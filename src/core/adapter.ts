@@ -52,6 +52,8 @@ export interface RefPinner {
    * being garbage collected while jobs may still need it. Throws RefNotFoundError if it does not exist.
    */
   pin(ref: string): Promise<string>;
+  /** Undoes a `pin` whose job was never created. Idempotent; must not throw for an unknown commit. */
+  release(sha: string): Promise<void>;
 }
 
 export interface JobRequestInput {

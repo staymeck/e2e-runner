@@ -1,11 +1,9 @@
-import type { AdapterLookup } from "./adapter";
+import { UnknownProjectError, type AdapterLookup } from "./adapter";
 import { isBranchAllowed } from "./branch-pattern";
 import { JobNotFoundError, type Job, type JobFilter, type JobList, type JobPage } from "./job";
 import type { JobEnqueuer } from "./job-enqueuer";
 import { COMMIT_SHA, InvalidJobRequestError, RefNotAllowedError, TARGET_NAME } from "./job-request";
 import type { JobStore } from "./job-store";
-import type { JobScheduler } from "./job-scheduler";
-import { UnknownProjectError } from "./adapter";
 
 export const JOB_SERVICE = Symbol("JOB_SERVICE");
 
@@ -16,6 +14,11 @@ export interface ProjectPolicy {
   readonly defaultBranch: string;
 }
 
+/** Cancels a job; the scheduler does it. */
+export interface JobCanceller {
+  cancel(id: string): Promise<Job>;
+}
+
 export interface SubmitJob {
   readonly project: string;
   /** Defaults to the project's default branch. */
@@ -24,6 +27,10 @@ export interface SubmitJob {
   readonly kind?: string;
   readonly target: string;
   readonly params?: unknown;
+}
+
+function hasParentSegment(target: string): boolean {
+  return target.split("/").includes("..");
 }
 
 /**
@@ -37,7 +44,7 @@ export class JobService {
     policies: readonly ProjectPolicy[],
     private readonly adapters: AdapterLookup,
     private readonly enqueuer: JobEnqueuer,
-    private readonly scheduler: Pick<JobScheduler, "cancel">,
+    private readonly canceller: JobCanceller,
     private readonly store: JobStore,
   ) {
     this.policies = new Map(policies.map((policy) => [policy.id, policy]));
@@ -55,13 +62,18 @@ export class JobService {
     if (kind === undefined || !adapter.kinds.includes(kind)) {
       throw new InvalidJobRequestError(`kind must be one of: ${adapter.kinds.join(", ")}`);
     }
-    if (!TARGET_NAME.test(input.target)) throw new InvalidJobRequestError("target is not a valid scenario name");
+    if (!TARGET_NAME.test(input.target) || hasParentSegment(input.target)) throw new InvalidJobRequestError("target is not a valid scenario name");
     const params = adapter.validateRequest({ kind, target: input.target, params: input.params ?? null });
 
     const sha = await adapter.refs.pin(ref);
-    if (!COMMIT_SHA.test(sha)) throw new Error(`The adapter for "${input.project}" returned an invalid commit`);
-
-    return this.enqueuer.enqueue({ project: input.project, kind, ref, sha, target: input.target, params });
+    try {
+      if (!COMMIT_SHA.test(sha)) throw new Error(`The adapter for "${input.project}" returned an invalid commit`);
+      return this.enqueuer.enqueue({ project: input.project, kind, ref, sha, target: input.target, params });
+    } catch (error) {
+      // Nothing was queued: do not leave the commit protected for a job that does not exist.
+      await adapter.refs.release(sha).catch(() => undefined);
+      throw error;
+    }
   }
 
   get(id: string): Job {
@@ -75,7 +87,7 @@ export class JobService {
   }
 
   cancel(id: string): Promise<Job> {
-    return this.scheduler.cancel(id);
+    return this.canceller.cancel(id);
   }
 
   projects(): readonly ProjectPolicy[] {

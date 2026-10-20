@@ -89,6 +89,7 @@ export class FakeExecutor implements RunExecutor {
 /** Branch name -> commit. A branch that is not in the table does not exist. */
 export class FakeRefs implements RefPinner {
   readonly pinned: string[] = [];
+  readonly released: string[] = [];
 
   constructor(readonly commits: Record<string, string> = {}) {}
 
@@ -97,6 +98,10 @@ export class FakeRefs implements RefPinner {
     if (!sha) throw new RefNotFoundError(ref);
     this.pinned.push(ref);
     return sha;
+  }
+
+  async release(sha: string): Promise<void> {
+    this.released.push(sha);
   }
 }
 
