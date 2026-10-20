@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { createApp } from "../src/app";
+import type { ProjectCatalog } from "../src/core/adapter";
 import type { ServiceConfig } from "../src/config/service-config";
-import { FakeRefs, OK, fakeAdapter, type FakeAdapter } from "./helpers/fake-adapter";
+import { CatalogReadError } from "../src/core/job-request";
+import { FakeProjectCatalog, FakeRefs, OK, fakeAdapter, type FakeAdapter } from "./helpers/fake-adapter";
 import { buildService } from "./helpers/service";
 
 const KEY = "current-key-0123456789";
@@ -94,6 +96,93 @@ describe("GET /v1/projects", () => {
       assert.deepEqual(body.projects.map((p) => p.id), ["detox", "web"]);
       assert.deepEqual(Object.keys(body.projects[0] as object).sort(), ["allowedBranches", "defaultBranch", "id"]);
     });
+  });
+});
+
+describe("a project's catalog (fetch, refs, browse, targets)", () => {
+  it("answers 404 for an unknown project, before touching any adapter", async () => {
+    await withApi(async (api) => {
+      for (const [method, path] of [["POST", "/v1/projects/ghost/fetch"], ["GET", "/v1/projects/ghost/refs"], ["POST", "/v1/projects/ghost/browse"], ["GET", "/v1/projects/ghost/targets"]] as const) {
+        const response = await api.call(method, path, method === "POST" ? { ref: "main" } : undefined);
+        assert.equal(response.status, 404, `${method} ${path}`);
+        assert.equal(((await response.json()) as { error: string }).error, "unknown_project");
+      }
+    });
+  });
+
+  it("answers 404 for a configured project whose adapter has no browsable catalog", async () => {
+    await withApi(async (api) => {
+      const response = await api.call("GET", "/v1/projects/detox/refs");
+      assert.equal(response.status, 404);
+      assert.equal(((await response.json()) as { error: string }).error, "catalog_unsupported");
+    }, fakeAdapter("detox", ["devices"])); // no `browsable` attached
+  });
+
+  it("answers 422 catalog_unavailable, not a bare 500, when the catalog cannot answer right now", async () => {
+    const catalog: ProjectCatalog = {
+      fetch: async () => undefined,
+      refs: async () => ["main"],
+      browse: async () => {
+        throw new CatalogReadError("This commit has no orch.rc.json: it is not a perfect-qa catalog");
+      },
+      targets: async () => [],
+    };
+    await withApi(async (api) => {
+      const response = await api.call("POST", "/v1/projects/detox/browse", { ref: "main" });
+      assert.equal(response.status, 422);
+      assert.equal(((await response.json()) as { error: string }).error, "catalog_unavailable");
+    }, { ...fakeAdapter("detox", ["devices"]), browsable: catalog });
+  });
+
+  it("fetch brings new branches, and refs lists what the catalog offers", async () => {
+    const catalog = new FakeProjectCatalog(["main", "iteration_1"]);
+    await withApi(async (api) => {
+      assert.equal((await api.call("POST", "/v1/projects/detox/fetch")).status, 200);
+      assert.equal(catalog.fetched, 1);
+      const refs = await api.json<{ refs: string[] }>(api.call("GET", "/v1/projects/detox/refs"));
+      assert.deepEqual(refs.refs, ["main", "iteration_1"]);
+    }, { ...fakeAdapter("detox", ["devices"]), browsable: catalog });
+  });
+
+  it("browse positions the catalog and returns only the ref and its commit, never a server path", async () => {
+    const catalog = new FakeProjectCatalog(["main"]);
+    await withApi(async (api) => {
+      const response = await api.call("POST", "/v1/projects/detox/browse", { ref: "main" });
+      assert.equal(response.status, 200);
+      const body = (await response.json()) as Record<string, unknown>;
+      assert.deepEqual(Object.keys(body).sort(), ["ref", "sha"]);
+      assert.equal(body.ref, "main");
+      assert.deepEqual(catalog.browsed, ["main"]);
+    }, { ...fakeAdapter("detox", ["devices"]), browsable: catalog });
+  });
+
+  it("rejects an unknown field in the browse body, and a branch the catalog does not have", async () => {
+    const catalog = new FakeProjectCatalog(["main"]);
+    await withApi(async (api) => {
+      const extra = await api.call("POST", "/v1/projects/detox/browse", { ref: "main", oops: true });
+      assert.equal(extra.status, 400);
+      const missing = await api.call("POST", "/v1/projects/detox/browse", { ref: "ghost-branch" });
+      assert.equal(missing.status, 422);
+      assert.equal(((await missing.json()) as { error: string }).error, "ref_not_found");
+    }, { ...fakeAdapter("detox", ["devices"]), browsable: catalog });
+  });
+
+  it("targets lists what the last browse positioned the catalog at", async () => {
+    const catalog = new FakeProjectCatalog(["main"], { main: [{ id: "login", title: "Login" }] });
+    await withApi(async (api) => {
+      await api.call("POST", "/v1/projects/detox/browse", { ref: "main" });
+      const body = await api.json<{ targets: Array<{ id: string; title: string | null }> }>(api.call("GET", "/v1/projects/detox/targets"));
+      assert.deepEqual(body.targets, [{ id: "login", title: "Login" }]);
+    }, { ...fakeAdapter("detox", ["devices"]), browsable: catalog });
+  });
+
+  it("answers 400 for targets asked before anything was browsed", async () => {
+    const catalog = new FakeProjectCatalog(["main"]);
+    await withApi(async (api) => {
+      const response = await api.call("GET", "/v1/projects/detox/targets");
+      assert.equal(response.status, 400);
+      assert.equal(((await response.json()) as { error: string }).error, "invalid_request");
+    }, { ...fakeAdapter("detox", ["devices"]), browsable: catalog });
   });
 });
 

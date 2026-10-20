@@ -33,6 +33,18 @@ export function parseSubmit(body: unknown): SubmitJob {
   };
 }
 
+const KNOWN_BROWSE_KEYS: readonly string[] = ["ref"];
+
+/** Validates the body of POST /v1/projects/:id/browse: `{ ref }`, nothing else. */
+export function parseBrowse(body: unknown): string {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) throw new InvalidJobRequestError("the body must be a JSON object");
+  const fields = body as Record<string, unknown>;
+  for (const key of Object.keys(fields)) {
+    if (!KNOWN_BROWSE_KEYS.includes(key)) throw new InvalidJobRequestError(`unknown field "${key}"`);
+  }
+  return text(fields.ref, "ref", true) as string;
+}
+
 function one(value: unknown, field: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") throw new InvalidJobRequestError(`${field} must be given once`);
