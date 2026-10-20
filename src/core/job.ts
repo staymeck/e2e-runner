@@ -137,6 +137,17 @@ export class JobNotFoundError extends Error {
   }
 }
 
+/** A cancel (or other change) arrived for a job that already finished. */
+export class JobAlreadyFinishedError extends Error {
+  constructor(
+    readonly id: string,
+    readonly status: JobStatus,
+  ) {
+    super(`Job ${id} already finished (${status})`);
+    this.name = "JobAlreadyFinishedError";
+  }
+}
+
 /** The details given with a move do not fit the new status (e.g. `succeeded` without an outcome). */
 export class InvalidDetailsError extends Error {
   constructor(

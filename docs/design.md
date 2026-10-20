@@ -89,6 +89,14 @@ datos y el núcleo los guarda.
   si falta alguno no se toma ninguno.
 - Orden: llegada (`seq`), **por recurso**: un job en cabeza esperando `devices` no bloquea a uno posterior que necesita
   solo `cucumber`. El planificador recorre la cola en orden y arranca todo lo que cabe.
+- Un job en cola de un proyecto sin adaptador **se conserva** (aviso una vez): el proyecto puede faltar solo en esta
+  configuración. Un fallo al arrancar un job concreto lo marca `failed` sin detener al resto de la cola.
+- **Un job que no termina no bloquea la cola para siempre.** El `RunContext` lleva un `AbortSignal` que se aborta al
+  cancelar o agotar el tiempo de la fase (no se puede perder, a diferencia de `executor.cancel`, que mata los
+  procesos). Tras cancelar hay un plazo de gracia (30 s) y, pasado, el planificador abandona la fase, llama a
+  `cleanup` y termina el job. El límite por fase es opcional (`phaseTimeoutMs`): una compilación de APK puede tardar.
+- Al apagar el servicio los jobs en ejecución se **cancelan** (terminan `cancelled`, no huérfanos) y se espera hasta
+  10 s antes de cerrar la base; lo que quede lo concilia el siguiente arranque.
 - Para Detox `devices` es exclusivo: un job a la vez. El paralelismo entre proyectos llega en M5; requiere un
   planificador (no el `shiftNext` del orquestador).
 
@@ -219,9 +227,10 @@ Transiciones válidas (cualquier otra la rechaza el repositorio de jobs):
 - Reintentar solo se permite sobre un job terminal (409 en caso contrario): crea un job nuevo con el mismo sha,
   parámetros y recursos, y `retry_of` apuntando al original.
 
-**Reconciliación al arrancar:** por cada job `running` o `cancelling`: si hay `pid`, se mata el árbol de procesos
-(el árbol puede seguir vivo tras un crash y mantener ocupados dispositivos y puertos), se llama a `cleanup`, el job
-pasa a `failed` ("servicio reiniciado durante la fase X") y se liberan sus recursos. La cola `queued` se conserva;
+**Reconciliación al arrancar:** por cada job `running` o `cancelling`: el adaptador recibe el `pid` registrado para
+limpiar (el árbol de procesos puede seguir vivo tras un crash y mantener ocupados dispositivos y puertos). Un job
+`running` pasa a `failed` ("servicio reiniciado durante la fase X") y uno `cancelling` pasa a `cancelled` (la
+cancelación ya estaba pedida); en ambos casos se liberan sus recursos. La cola `queued` se conserva;
 un `queued` cuyo sha ya no existe pasa a `failed` ("commit no disponible").
 
 ## 5. API v1

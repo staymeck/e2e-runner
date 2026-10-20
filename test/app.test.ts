@@ -28,11 +28,31 @@ describe("shutdown", () => {
           calls.push("first");
           throw new Error("boom");
         },
-        () => calls.push("second"),
+        () => {
+          calls.push("second");
+        },
       ],
     });
     await app.close();
     assert.deepEqual(calls, ["first", "second"]);
+  });
+
+  it("waits for each asynchronous callback before running the next (drain, then close the database)", async () => {
+    const calls: string[] = [];
+    const app = await createApp(config, {
+      jobs: new SqliteJobStore(openMemoryDatabase()),
+      onShutdown: [
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          calls.push("drained");
+        },
+        () => {
+          calls.push("closed");
+        },
+      ],
+    });
+    await app.close();
+    assert.deepEqual(calls, ["drained", "closed"]);
   });
 });
 

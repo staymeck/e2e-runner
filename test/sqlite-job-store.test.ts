@@ -445,6 +445,53 @@ describe("SqliteJobStore.listByStatus and listActive", () => {
   });
 });
 
+describe("SqliteJobStore.claim", () => {
+  let ctx: ReturnType<typeof setup>;
+  beforeEach(() => (ctx = setup()));
+  const locks = () => ctx.db.all("SELECT resource, job_id FROM locks ORDER BY resource").map((r) => `${r.resource}:${r.job_id}`);
+
+  it("takes every resource and starts the job", () => {
+    ctx.store.create(newJob({ locks: ["devices", "cucumber"] }));
+    const job = ctx.store.claim("job-1");
+    assert.equal(job?.status, "running");
+    assert.ok(job?.startedAt);
+    assert.deepEqual(locks(), ["cucumber:job-1", "devices:job-1"]);
+  });
+
+  it("takes nothing when any resource is held by another job", () => {
+    ctx.store.create(newJob({ locks: ["devices"] }));
+    ctx.store.create(newJob({ locks: ["cucumber", "devices"] }));
+    ctx.store.claim("job-1");
+    assert.equal(ctx.store.claim("job-2"), undefined);
+    assert.deepEqual(locks(), ["devices:job-1"], "cucumber must not stay taken");
+    assert.equal(ctx.store.get("job-2")?.status, "queued");
+  });
+
+  it("starts a job that needs no resource whatever is held", () => {
+    ctx.store.create(newJob({ locks: ["devices"] }));
+    ctx.store.create(newJob({ locks: [] }));
+    ctx.store.claim("job-1");
+    assert.equal(ctx.store.claim("job-2")?.status, "running");
+  });
+
+  it("only claims a queued job, once", () => {
+    ctx.store.create(newJob());
+    assert.equal(ctx.store.claim("job-1")?.status, "running");
+    assert.equal(ctx.store.claim("job-1"), undefined);
+    assert.equal(ctx.store.claim("ghost"), undefined);
+    assert.equal(ctx.db.get("SELECT COUNT(*) AS n FROM locks")?.n, 1);
+  });
+
+  it("makes the resource available again as soon as the job finishes", () => {
+    ctx.store.create(newJob());
+    ctx.store.create(newJob());
+    ctx.store.claim("job-1");
+    assert.equal(ctx.store.claim("job-2"), undefined);
+    ctx.store.transition("job-1", "failed", { error: "x" });
+    assert.equal(ctx.store.claim("job-2")?.status, "running");
+  });
+});
+
 describe("SqliteJobStore.setPid", () => {
   it("stores and clears the process id of a live job", () => {
     const { store } = setup();

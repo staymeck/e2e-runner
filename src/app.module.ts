@@ -5,12 +5,12 @@ import { HealthController } from "./api/health.controller";
 import { API_KEY_VERIFIER, ApiKeyVerifier } from "./auth/api-key-verifier";
 import type { ServiceConfig } from "./config/service-config";
 import { JOB_STORE, type JobStore } from "./core/job-store";
-import { SHUTDOWN_CALLBACKS, ShutdownHooks } from "./lifecycle/shutdown-hooks";
+import { SHUTDOWN_CALLBACKS, ShutdownHooks, type ShutdownCallback } from "./lifecycle/shutdown-hooks";
 
 export interface AppDependencies {
   readonly jobs: JobStore;
-  /** Run when the app shuts down, e.g. to close the database. */
-  readonly onShutdown?: readonly (() => void)[];
+  /** Run in order when the app shuts down, e.g. to drain the scheduler and then close the database. */
+  readonly onShutdown?: readonly ShutdownCallback[];
 }
 
 @Module({})
