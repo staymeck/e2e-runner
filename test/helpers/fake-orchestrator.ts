@@ -26,7 +26,9 @@ if (cmd === "scenarios") {
   if (env.FAKE_OLD) { console.error("error: unknown command 'scenarios'"); process.exit(1); }
   console.log("[orchestrator] loaded 2 scenario file(s): noise on stdout");
   const ids = JSON.parse(env.FAKE_SCENARIOS || '["login","checkout"]');
-  const doc = { contractVersion: 1, scenarios: ids.map((id) => ({ id, kind: "step", title: null, description: null, apps: ["kpmake"], appRefs: [{ name: "kpmake", branch: "iteration_1" }] })) };
+  // A real secret must never reach this process; "secret-visible" here would mean it did.
+  const secretTitle = env.E2E_SERVICE_API_KEY ? "secret-visible" : null;
+  const doc = { contractVersion: 1, scenarios: ids.map((id) => ({ id, kind: "step", title: secretTitle, description: null, apps: ["kpmake"], appRefs: [{ name: "kpmake", branch: "iteration_1" }] })) };
   const out = args[args.indexOf("--out") + 1];
   fs.writeFileSync(out, JSON.stringify(doc));
   process.exit(0);

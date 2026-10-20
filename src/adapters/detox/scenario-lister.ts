@@ -83,6 +83,13 @@ export class CliScenarioLister implements ScenarioLister {
     private readonly runner: CommandRunner,
     private readonly environment: () => Readonly<Record<string, string>>,
     private readonly node: string = process.execPath,
+    /**
+     * Names to strip from the environment this runs with. Needed because `CommandRunner.run` with
+     * `minimalEnv: false` rebuilds its base environment from its own process, not from `environment()`
+     * alone: a name this omits is not thereby deleted if the runner still holds it. Whatever `environment()`
+     * filters out must also be named here, or it can come back in.
+     */
+    private readonly removeFromEnv: readonly string[] = [],
   ) {}
 
   async list(catalogDir: string): Promise<readonly ScenarioInfo[]> {
@@ -98,6 +105,7 @@ export class CliScenarioLister implements ScenarioLister {
           cwd: catalogDir,
           timeoutMs: LIST_TIMEOUT_MS,
           minimalEnv: false,
+          removeEnv: this.removeFromEnv,
           env: { ...this.environment(), PERFECT_QA_ORIGINAL_DIR: catalogDir, ORCH_CATALOG_ROOT: catalogDir },
         });
       } catch (error) {

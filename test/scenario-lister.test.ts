@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { CliScenarioLister, ScenarioListingError, ScenariosUnsupportedError, parseScenarioListing } from "../src/adapters/detox/scenario-lister";
 import { ExecCommandRunner } from "../src/infra/exec-command-runner";
+import { SERVICE_SECRET_NAMES, childEnvironment } from "../src/infra/safe-environment";
 import { fakeCatalogDir } from "./helpers/fake-orchestrator";
 import { makeDir, scratchDir } from "./helpers/workspace";
 
@@ -77,5 +78,36 @@ describe("CliScenarioLister", () => {
     await lister().list(fakeCatalogDir(root, "tidy-ok"));
     await assert.rejects(lister({ FAKE_OLD: "1" }).list(fakeCatalogDir(root, "tidy-old")));
     assert.equal(tempScenarioFolders().length, before);
+  });
+});
+
+describe("CliScenarioLister: the service's own secret", () => {
+  /**
+   * `CommandRunner.run` with `minimalEnv: false` (what `list()` always uses) rebuilds its base
+   * environment from this process's own `process.env`, not only from what `environment()` returns:
+   * a key `environment()` merely omits is not thereby deleted, and comes back from that base. Only
+   * naming it in `removeFromEnv` actually strips it. The real secret must be in this process's own
+   * `process.env` for that to be exercised at all, so it is set and removed around the assertion.
+   */
+  it("never reaches the catalog's code, although it runs with minimalEnv: false", async () => {
+    process.env.E2E_SERVICE_API_KEY = "must-not-leak-0123456789";
+    try {
+      const safe = new CliScenarioLister(new ExecCommandRunner(), childEnvironment, process.execPath, SERVICE_SECRET_NAMES);
+      const [scenario] = await safe.list(fakeCatalogDir(root, "secret-removed"));
+      assert.notEqual(scenario?.title, "secret-visible", "the service's own API key reached the catalog's code");
+    } finally {
+      delete process.env.E2E_SERVICE_API_KEY;
+    }
+  });
+
+  it("leaks without removeFromEnv: this is why it must always be passed in production", async () => {
+    process.env.E2E_SERVICE_API_KEY = "must-not-leak-0123456789";
+    try {
+      const unguarded = new CliScenarioLister(new ExecCommandRunner(), childEnvironment);
+      const [scenario] = await unguarded.list(fakeCatalogDir(root, "secret-unguarded"));
+      assert.equal(scenario?.title, "secret-visible", "expected the known gap to reproduce without removeFromEnv");
+    } finally {
+      delete process.env.E2E_SERVICE_API_KEY;
+    }
   });
 });
