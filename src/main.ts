@@ -1,6 +1,10 @@
+import * as path from "node:path";
+import { DockerBakeContainers } from "./adapters/detox/bake-containers";
 import { createDetoxCatalog } from "./adapters/detox/create-catalog";
 import { DETOX_ADAPTER } from "./adapters/detox/detox-config";
+import { createDetoxAdapter } from "./adapters/detox/detox-adapter";
 import { NpmInstaller } from "./adapters/detox/dependency-installer";
+import { CliScenarioLister } from "./adapters/detox/scenario-lister";
 import { createApp } from "./app";
 import { loadConfig } from "./config/load-config";
 import { AdapterRegistry } from "./core/adapter";
@@ -11,7 +15,12 @@ import { ConfigError } from "./core/problems";
 import { openDatabase } from "./db/open-database";
 import { SqliteJobStore } from "./db/sqlite-job-store";
 import { ExecCommandRunner } from "./infra/exec-command-runner";
+import { FileJobLog } from "./infra/file-job-log";
+import { NodeProcessHost } from "./infra/node-process-host";
+import { SERVICE_SECRET_NAMES, childEnvironment } from "./infra/safe-environment";
 import { PinoNestLogger, createLogger } from "./logging/logger";
+
+const JOB_LOGS_SUBDIR = "logs";
 
 const SHUTDOWN_DRAIN_MS = 10_000;
 
@@ -19,18 +28,30 @@ async function main(): Promise<void> {
   const logger = createLogger();
   const config = loadConfig(process.env);
 
+  const db = openDatabase(config.dataDir);
+  const store = new SqliteJobStore(db);
+  const adapters = new AdapterRegistry();
+
   // Stops here, with every problem listed, if the two catalog folders are not two worktrees of the project's repository.
   const detoxProject = config.projects.find((project) => project.adapter === DETOX_ADAPTER);
   if (config.detox && detoxProject) {
     const runner = new ExecCommandRunner();
-    // The Detox adapter (STA-38) takes this catalog; for now it is only checked.
-    await createDetoxCatalog(config.detox, detoxProject, runner, new NpmInstaller(runner));
+    const catalog = await createDetoxCatalog(config.detox, detoxProject, runner, new NpmInstaller(runner));
+    adapters.register(
+      createDetoxAdapter(
+        {
+          catalog,
+          host: new NodeProcessHost(runner),
+          lister: new CliScenarioLister(runner, childEnvironment, process.execPath, SERVICE_SECRET_NAMES),
+          containers: new DockerBakeContainers(runner, logger),
+          log: new FileJobLog(path.join(config.dataDir, JOB_LOGS_SUBDIR), logger),
+          environment: childEnvironment,
+          diagnostics: logger,
+        },
+        detoxProject.id,
+      ),
+    );
   }
-
-  const db = openDatabase(config.dataDir);
-  const store = new SqliteJobStore(db);
-  // Project adapters are registered here as they are built (the Detox one arrives with STA-38).
-  const adapters = new AdapterRegistry();
   const scheduler = new JobScheduler(store, adapters, logger);
   await scheduler.reconcile();
 
