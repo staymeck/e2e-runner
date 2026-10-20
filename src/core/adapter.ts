@@ -18,15 +18,25 @@ export interface PhaseResult {
 export interface RunContext {
   /** Tells the service the root of the process tree it just started, so a crash can be cleaned up after. */
   registerProcess(pid: number): void;
+  /**
+   * Aborted when the job is cancelled or the phase times out. Unlike `RunExecutor.cancel`, it cannot be
+   * missed: an adapter that is still setting up when the cancel arrives sees `aborted` and must not start.
+   */
+  readonly signal: AbortSignal;
 }
 
 /** Runs the phases of a job. The only part of an adapter the scheduler needs. */
 export interface RunExecutor {
   /** Names of the phases a job of this kind goes through, in order. */
   plan(request: { readonly kind: string; readonly target: string; readonly params: unknown }): readonly string[];
-  /** Runs one phase to the end. Must resolve (with outcome `failure`) rather than throw for an ordinary failure. */
+  /**
+   * Runs one phase to the end. Must resolve (with outcome `failure`) rather than throw for an ordinary
+   * failure, and should stop when `context.signal` aborts. The scheduler does not wait forever: after a
+   * cancel (grace period) or a timeout it gives up on the phase and cleans up, so a run that ignores
+   * both is abandoned, not trusted.
+   */
   run(phase: PhaseRun, context: RunContext): Promise<PhaseResult>;
-  /** Asks the running phase to stop. Idempotent; safe to call when nothing is running. */
+  /** Kills the running phase's processes. Idempotent; safe to call when nothing is running. */
   cancel(jobId: string): Promise<void>;
   /**
    * Removes whatever the job left behind. Called after every run and, after a crash, with the

@@ -7,6 +7,8 @@ import { openDatabase } from "./db/open-database";
 import { SqliteJobStore } from "./db/sqlite-job-store";
 import { PinoNestLogger, createLogger } from "./logging/logger";
 
+const SHUTDOWN_DRAIN_MS = 10_000;
+
 async function main(): Promise<void> {
   const logger = createLogger();
   const config = loadConfig(process.env);
@@ -17,7 +19,9 @@ async function main(): Promise<void> {
   const scheduler = new JobScheduler(store, new AdapterRegistry(), logger);
   await scheduler.reconcile();
 
-  const app = await createApp(config, { jobs: store, onShutdown: [() => scheduler.stop(), () => db.close()] }, new PinoNestLogger(logger));
+  // Running jobs are cancelled and given a moment to end before the database goes away.
+  const onShutdown = [() => scheduler.shutdown(SHUTDOWN_DRAIN_MS), () => db.close()];
+  const app = await createApp(config, { jobs: store, onShutdown }, new PinoNestLogger(logger));
   await app.listen(config.server.port, config.server.host);
   logger.info({ host: config.server.host, port: config.server.port, projects: config.projects.map((p) => p.id) }, "e2e-runner listening");
 }

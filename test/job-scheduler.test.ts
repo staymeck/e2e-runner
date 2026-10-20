@@ -8,7 +8,7 @@ import { JobScheduler } from "../src/core/job-scheduler";
 import type { Database } from "../src/db/database";
 import { openDatabase, openMemoryDatabase } from "../src/db/open-database";
 import { SqliteJobStore } from "../src/db/sqlite-job-store";
-import { FAIL, FakeExecutor, OK, WARN, fakeAdapter, settle } from "./helpers/fake-adapter";
+import { FAIL, FakeExecutor, OK, WARN, fakeAdapter, settle, sleep } from "./helpers/fake-adapter";
 import { scratchDir } from "./helpers/workspace";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -277,17 +277,205 @@ describe("cancel", () => {
 });
 
 describe("a queued job of a project without an adapter", () => {
-  it("fails instead of blocking the queue", async () => {
+  it("is kept for when the adapter is back, and does not block anyone", async () => {
     const detox = fakeAdapter("detox", ["devices"]);
     const store = new SqliteJobStore(openMemoryDatabase());
     const orphan = store.create({ project: "gone", kind: "run", ref: "main", sha: SHA, target: "t", params: null, locks: ["devices"], phases: ["scenario"] });
     const live = store.create({ project: "detox", kind: "run", ref: "main", sha: SHA, target: "t", params: null, locks: ["devices"], phases: ["scenario"] });
-    const scheduler = new JobScheduler(store, new AdapterRegistry([detox]));
+    const warnings: string[] = [];
+    const scheduler = new JobScheduler(store, new AdapterRegistry([detox]), { info: () => undefined, error: () => undefined, warn: (_f, m) => warnings.push(m) });
     scheduler.kick();
-    assert.equal(store.get(orphan.id)?.status, "failed");
-    assert.match(store.get(orphan.id)?.error ?? "", /No adapter/);
+    scheduler.kick();
+    assert.equal(store.get(orphan.id)?.status, "queued");
     assert.equal(store.get(live.id)?.status, "running");
+    assert.equal(warnings.length, 1, "told once, not on every kick");
     await detox.executor.finish(live.id, OK);
+
+    const back = fakeAdapter("gone", ["devices"]);
+    const next = new JobScheduler(store, new AdapterRegistry([back]));
+    next.kick();
+    assert.equal(store.get(orphan.id)?.status, "running");
+    await back.executor.finish(orphan.id, OK);
+  });
+});
+
+describe("a job that cannot be started", () => {
+  class ThrowingClaimStore extends SqliteJobStore {
+    constructor(db: Database, private readonly poison: string) {
+      super(db);
+    }
+    override claim(id: string) {
+      if (this.get(id)?.target === this.poison) throw new Error("disk exploded");
+      return super.claim(id);
+    }
+  }
+
+  it("fails that job and lets the rest of the queue run", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const store = new ThrowingClaimStore(openMemoryDatabase(), "poison");
+    const scheduler = new JobScheduler(store, new AdapterRegistry([detox]));
+    const enqueuer = new JobEnqueuer(store, new AdapterRegistry([detox]), scheduler);
+    const poison = enqueuer.enqueue(request("detox", "poison"));
+    const fine = enqueuer.enqueue(request("detox", "fine"));
+    assert.equal(store.get(poison.id)?.status, "failed");
+    assert.match(store.get(poison.id)?.error ?? "", /Could not start: disk exploded/);
+    assert.equal(store.get(fine.id)?.status, "running");
+    await detox.executor.finish(fine.id, OK);
+  });
+
+  it("does not crash the caller when the queue cannot even be read", () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const store = new SqliteJobStore(openMemoryDatabase());
+    store.listByStatus = () => {
+      throw new Error("db gone");
+    };
+    const errors: string[] = [];
+    const scheduler = new JobScheduler(store, new AdapterRegistry([detox]), { info: () => undefined, warn: () => undefined, error: (_f, m) => errors.push(m) });
+    assert.doesNotThrow(() => scheduler.kick());
+    assert.deepEqual(errors, ["could not read the queue"]);
+  });
+
+  it("ignores a resource listed twice by an adapter", async () => {
+    const detox = fakeAdapter("detox", ["devices", "devices"]);
+    const r = rig(openMemoryDatabase(), detox);
+    const job = r.enqueuer.enqueue(request("detox"));
+    assert.deepEqual(job.locks, ["devices"]);
+    assert.equal(statusOf(r, job), "running");
+    await detox.executor.finish(job.id, OK);
+  });
+});
+
+describe("a final status that cannot be recorded", () => {
+  it("does not leave the job running and holding its resources", async () => {
+    class RefusesSuccess extends SqliteJobStore {
+      override transition(id: string, to: Parameters<SqliteJobStore["transition"]>[1], details?: Parameters<SqliteJobStore["transition"]>[2]) {
+        if (to === "succeeded") throw new Error("store refused");
+        return super.transition(id, to, details);
+      }
+    }
+    const detox = fakeAdapter("detox", ["devices"]);
+    const store = new RefusesSuccess(openMemoryDatabase());
+    const registry = new AdapterRegistry([detox]);
+    const scheduler = new JobScheduler(store, registry);
+    const job = new JobEnqueuer(store, registry, scheduler).enqueue(request("detox"));
+    await detox.executor.finish(job.id, OK);
+    assert.equal(store.get(job.id)?.status, "failed");
+    assert.match(store.get(job.id)?.error ?? "", /Could not record the final status: store refused/);
+    assert.equal(store.get(job.id)?.pid, null);
+  });
+});
+
+describe("cancel: queue effects", () => {
+  it("lets later jobs start when a queued job that was holding them back is cancelled", async () => {
+    const holder = fakeAdapter("holder", ["devices"]);
+    const both = fakeAdapter("both", ["devices", "cucumber"]);
+    const web = fakeAdapter("web", ["cucumber"]);
+    const r = rig(openMemoryDatabase(), holder, both, web);
+    const a = r.enqueuer.enqueue(request("holder"));
+    const b = r.enqueuer.enqueue(request("both"));
+    const c = r.enqueuer.enqueue(request("web"));
+    assert.equal(statusOf(r, c), "queued");
+    await r.scheduler.cancel(b.id);
+    assert.equal(statusOf(r, c), "running", "c only waited behind b");
+    await holder.executor.finish(a.id, OK);
+    await web.executor.finish(c.id, OK);
+  });
+});
+
+describe("process ids", () => {
+  it("are cleared when a phase ends, so none is left pointing at a dead process", async () => {
+    const detox = fakeAdapter("detox", ["devices"], new FakeExecutor(["build", "scenario"]));
+    const r = rig(openMemoryDatabase(), detox);
+    const job = r.enqueuer.enqueue(request("detox"));
+    detox.executor.registerProcess(job.id, 4242, "build");
+    assert.equal(r.store.get(job.id)?.pid, 4242);
+    await detox.executor.finish(job.id, OK, "build");
+    assert.equal(r.store.get(job.id)?.status, "running");
+    assert.equal(r.store.get(job.id)?.pid, null, "between phases there is no process");
+    await detox.executor.finish(job.id, OK, "scenario");
+  });
+});
+
+describe("cancel signal", () => {
+  it("aborts the signal the phase was given, so a run that is still setting up cannot miss the cancel", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const r = rig(openMemoryDatabase(), detox);
+    const job = r.enqueuer.enqueue(request("detox"));
+    const signal = detox.executor.signalOf(job.id);
+    assert.equal(signal.aborted, false);
+    await r.scheduler.cancel(job.id);
+    assert.equal(signal.aborted, true);
+    await detox.executor.finish(job.id, FAIL);
+  });
+});
+
+describe("a run that never ends", () => {
+  it("is abandoned after the cancel grace period: cleaned up, cancelled, resources freed", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const store = new SqliteJobStore(openMemoryDatabase());
+    const registry = new AdapterRegistry([detox]);
+    const scheduler = new JobScheduler(store, registry, undefined, { cancelGraceMs: 30 });
+    const enqueuer = new JobEnqueuer(store, registry, scheduler);
+    const stuck = enqueuer.enqueue(request("detox"));
+    const next = enqueuer.enqueue(request("detox"));
+    await scheduler.cancel(stuck.id); // the adapter ignores it: run() never settles
+    assert.equal(store.get(stuck.id)?.status, "cancelling");
+    await sleep(150);
+    assert.equal(store.get(stuck.id)?.status, "cancelled");
+    assert.deepEqual(detox.executor.cleaned[0], [stuck.id, null]);
+    assert.equal(store.get(next.id)?.status, "running", "the queue moved on");
+    await detox.executor.finish(next.id, OK);
+  });
+
+  it("fails a phase that outlives its time limit, saying so", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const store = new SqliteJobStore(openMemoryDatabase());
+    const registry = new AdapterRegistry([detox]);
+    const scheduler = new JobScheduler(store, registry, undefined, { phaseTimeoutMs: 30, cancelGraceMs: 30 });
+    const job = new JobEnqueuer(store, registry, scheduler).enqueue(request("detox"));
+    await sleep(200);
+    const done = store.get(job.id)!;
+    assert.equal(done.status, "failed");
+    assert.match(done.error ?? "", /Phase "scenario" timed out after 30 ms/);
+    assert.deepEqual(detox.executor.cancelled, [job.id], "the adapter was told to kill it");
+  });
+
+  it("does not time out a phase that ends in time", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const store = new SqliteJobStore(openMemoryDatabase());
+    const registry = new AdapterRegistry([detox]);
+    const scheduler = new JobScheduler(store, registry, undefined, { phaseTimeoutMs: 60, cancelGraceMs: 30 });
+    const job = new JobEnqueuer(store, registry, scheduler).enqueue(request("detox"));
+    await detox.executor.finish(job.id, OK);
+    await sleep(120);
+    assert.equal(store.get(job.id)?.status, "succeeded");
+    assert.deepEqual(detox.executor.cancelled, []);
+  });
+});
+
+describe("shutdown", () => {
+  it("cancels what is running, waits for it and starts nothing new", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const r = rig(openMemoryDatabase(), detox);
+    const running = r.enqueuer.enqueue(request("detox"));
+    const queued = r.enqueuer.enqueue(request("detox"));
+    const done = r.scheduler.shutdown(1000);
+    await settle();
+    assert.equal(statusOf(r, running), "cancelling");
+    await detox.executor.finish(running.id, FAIL);
+    await done;
+    assert.equal(statusOf(r, running), "cancelled");
+    assert.equal(statusOf(r, queued), "queued", "the queue is kept for the next start");
+  });
+
+  it("gives up waiting after the timeout", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const r = rig(openMemoryDatabase(), detox);
+    const job = r.enqueuer.enqueue(request("detox"));
+    const started = Date.now();
+    await r.scheduler.shutdown(40);
+    assert.ok(Date.now() - started < 1000);
+    assert.equal(statusOf(r, job), "cancelling", "left for the next start to reconcile");
   });
 });
 
@@ -343,6 +531,33 @@ describe("after a restart", () => {
     await r.scheduler.reconcile();
     await r.scheduler.reconcile();
     assert.equal(r.store.list().jobs.length, 0);
+  });
+
+  it("leaves alone the jobs this scheduler is running right now", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const r = rig(openMemoryDatabase(), detox);
+    const job = r.enqueuer.enqueue(request("detox"));
+    await r.scheduler.reconcile();
+    assert.equal(statusOf(r, job), "running");
+    assert.deepEqual(detox.executor.cleaned, []);
+    await detox.executor.finish(job.id, OK);
+    assert.equal(statusOf(r, job), "succeeded");
+  });
+
+  it("keeps closing the other orphans when one of them cannot be closed", async () => {
+    const store = new SqliteJobStore(openMemoryDatabase());
+    const mk = (target: string, locks: string[]) => store.create({ project: "detox", kind: "run", ref: "main", sha: SHA, target, params: null, locks, phases: ["scenario"] });
+    const first = mk("a", ["x"]);
+    const second = mk("b", ["y"]);
+    store.claim(first.id);
+    store.claim(second.id);
+    const original = store.transition.bind(store);
+    store.transition = (id, to, details) => {
+      if (id === first.id) throw new Error("cannot");
+      return original(id, to, details);
+    };
+    await new JobScheduler(store, new AdapterRegistry([fakeAdapter("detox", [])])).reconcile();
+    assert.equal(store.get(second.id)?.status, "failed");
   });
 
   it("closes an active job even when its project has no adapter any more", async () => {

@@ -160,7 +160,7 @@ export class SqliteJobStore implements JobStore {
     const claimed = this.db.transaction(() => {
       const row = this.db.get("SELECT status, locks FROM jobs WHERE id = ?", id);
       if (!row || row.status !== "queued") return false;
-      const resources = JSON.parse(row.locks as string) as string[];
+      const resources = [...new Set(JSON.parse(row.locks as string) as string[])];
       for (const resource of resources) {
         if (this.db.get("SELECT job_id FROM locks WHERE resource = ?", resource)) return false;
       }

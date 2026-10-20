@@ -1,6 +1,7 @@
 import type { AdapterLookup } from "./adapter";
 import type { Job } from "./job";
 import type { JobStore } from "./job-store";
+import type { QueueListener } from "./queue-listener";
 
 export interface EnqueueRequest {
   readonly project: string;
@@ -11,11 +12,6 @@ export interface EnqueueRequest {
   readonly target: string;
   readonly params?: unknown;
   readonly retryOf?: string;
-}
-
-/** Something to tell that the queue changed. */
-export interface QueueListener {
-  kick(): void;
 }
 
 /**
@@ -38,7 +34,7 @@ export class JobEnqueuer {
       sha: request.sha,
       target: request.target,
       params: request.params,
-      locks: [...adapter.locks],
+      locks: [...new Set(adapter.locks)],
       phases: [...adapter.executor.plan({ kind: request.kind, target: request.target, params: request.params })],
       ...(request.retryOf === undefined ? {} : { retryOf: request.retryOf }),
     });

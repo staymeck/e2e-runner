@@ -89,6 +89,14 @@ datos y el núcleo los guarda.
   si falta alguno no se toma ninguno.
 - Orden: llegada (`seq`), **por recurso**: un job en cabeza esperando `devices` no bloquea a uno posterior que necesita
   solo `cucumber`. El planificador recorre la cola en orden y arranca todo lo que cabe.
+- Un job en cola de un proyecto sin adaptador **se conserva** (aviso una vez): el proyecto puede faltar solo en esta
+  configuración. Un fallo al arrancar un job concreto lo marca `failed` sin detener al resto de la cola.
+- **Un job que no termina no bloquea la cola para siempre.** El `RunContext` lleva un `AbortSignal` que se aborta al
+  cancelar o agotar el tiempo de la fase (no se puede perder, a diferencia de `executor.cancel`, que mata los
+  procesos). Tras cancelar hay un plazo de gracia (30 s) y, pasado, el planificador abandona la fase, llama a
+  `cleanup` y termina el job. El límite por fase es opcional (`phaseTimeoutMs`): una compilación de APK puede tardar.
+- Al apagar el servicio los jobs en ejecución se **cancelan** (terminan `cancelled`, no huérfanos) y se espera hasta
+  10 s antes de cerrar la base; lo que quede lo concilia el siguiente arranque.
 - Para Detox `devices` es exclusivo: un job a la vez. El paralelismo entre proyectos llega en M5; requiere un
   planificador (no el `shiftNext` del orquestador).
 
