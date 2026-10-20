@@ -194,16 +194,27 @@ locks(resource TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id))
 schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)
 ```
 
-Migraciones: archivos `.sql` numerados, cada uno en una transacción.
+Migraciones: objetos TypeScript numerados 1, 2, 3... (así `tsc` las incluye sin paso de copia), cada una en una
+transacción que vuelve a comprobar la versión bajo el bloqueo de escritura, por si otro proceso arranca a la vez. El
+servicio se niega a abrir una base más nueva que su código. Una migración que reconstruya una tabla
+(`PRAGMA foreign_keys=OFF`) no puede ir dentro de una transacción: habrá que tratarla aparte.
 
 Estados de `jobs.status`: `queued`, `running` (incluye la preparación: checkout y `npm ci` ocurren con los recursos
 tomados), `cancelling`, `succeeded`, `failed`, `cancelled`.
 
 Transiciones válidas (cualquier otra la rechaza el repositorio de jobs):
-- `queued -> running | cancelled`
+- `queued -> running | cancelled | failed` (`failed` para un job en cola cuyo commit ya no existe)
 - `running -> succeeded | failed | cancelling`
 - `cancelling -> cancelled | failed` (`cancel_requested_at` se fija al pasar a `cancelling`)
 - Un fallo de preparación es `running -> failed`: se llama a `cleanup` y se liberan los recursos.
+- El estado final debe ir respaldado por sus datos: `succeeded` exige `outcome` success o warning y todas las fases
+  terminadas; `failed` exige un `error` y registra `outcome` failure. `outcome` y `error` solo se añaden, nunca se
+  borran ni se sobrescriben: gana la primera causa.
+- Una fase solo avanza (`pending -> running -> terminada`) y solo mientras el job está `running` o `cancelling`; al
+  terminar el job, las fases abiertas pasan a `failed`/`skipped` (o `cancelled`) en la misma transacción que libera
+  los recursos. Lo mismo para el `pid`: solo un job vivo puede tenerlo.
+- `cancelling -> cancelling` no es una transición: el servicio lo trata como idempotente (200) leyendo antes el estado,
+  y traduce la carrera con `InvalidTransitionError` a 409.
 - Cancelar un job ya terminal devuelve 409; cancelar uno en `cancelling` es idempotente (200).
 - Reintentar solo se permite sobre un job terminal (409 en caso contrario): crea un job nuevo con el mismo sha,
   parámetros y recursos, y `retry_of` apuntando al original.

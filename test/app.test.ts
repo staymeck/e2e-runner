@@ -4,6 +4,8 @@ import { after, before, describe, it } from "node:test";
 import type { INestApplication } from "@nestjs/common";
 import { createApp } from "../src/app";
 import type { ServiceConfig } from "../src/config/service-config";
+import { openMemoryDatabase } from "../src/db/open-database";
+import { SqliteJobStore } from "../src/db/sqlite-job-store";
 
 const KEY = "current-key-0123456789";
 const NEXT_KEY = "next-key-0123456789ab";
@@ -16,12 +18,30 @@ const config: ServiceConfig = {
   detox: undefined,
 };
 
+describe("shutdown", () => {
+  it("runs the registered callbacks once, even if one of them throws", async () => {
+    const calls: string[] = [];
+    const app = await createApp(config, {
+      jobs: new SqliteJobStore(openMemoryDatabase()),
+      onShutdown: [
+        () => {
+          calls.push("first");
+          throw new Error("boom");
+        },
+        () => calls.push("second"),
+      ],
+    });
+    await app.close();
+    assert.deepEqual(calls, ["first", "second"]);
+  });
+});
+
 describe("HTTP API", () => {
   let app: INestApplication;
   let base: string;
 
   before(async () => {
-    app = await createApp(config);
+    app = await createApp(config, { jobs: new SqliteJobStore(openMemoryDatabase()) });
     await app.listen(0, "127.0.0.1");
     base = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}`;
   });
