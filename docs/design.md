@@ -94,18 +94,26 @@ datos y el núcleo los guarda.
 
 ### 2.3 Registro de proyectos
 
-Un YAML por instalación (`E2E_SERVICE_CONFIG`), validado al arrancar:
+Un archivo JSON por instalación (`E2E_SERVICE_CONFIG`), validado al arrancar. Es JSON y no YAML porque leer YAML
+exige una dependencia que no está aprobada; el formato queda aislado en la carga de configuración, así que
+cambiarlo después es un cambio local.
 
-```yaml
-projects:
-  detox:
-    adapter: detox
-    repo: git@git.example.com:formos/detox-testing.git
-    allowedBranches: ["iteration_*", "main"]   # '*' no cruza '/'; se aplica sobre el nombre de rama
-    defaultBranch: iteration_1                 # rama que Configuración muestra al abrir
+```json
+{
+  "projects": {
+    "detox": {
+      "adapter": "detox",
+      "repo": "git@git.example.com:formos/detox-testing.git",
+      "allowedBranches": ["iteration_*", "main"],
+      "defaultBranch": "iteration_1"
+    }
+  }
+}
 ```
 
-Los directorios de trabajo van en variables de entorno del adaptador (sección 3), no en el YAML.
+`*` no cruza `/` y se aplica sobre el nombre de rama. `defaultBranch` es la rama que Configuración muestra al abrir y
+debe cumplir `allowedBranches`. Los directorios de trabajo van en variables de entorno del adaptador (sección 3), no en
+este archivo.
 
 ## 3. Repositorios del catálogo de Detox: dos carpetas fijas
 
