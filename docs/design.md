@@ -89,23 +89,39 @@ datos y el núcleo los guarda.
   si falta alguno no se toma ninguno.
 - Orden: llegada (`seq`), **por recurso**: un job en cabeza esperando `devices` no bloquea a uno posterior que necesita
   solo `cucumber`. El planificador recorre la cola en orden y arranca todo lo que cabe.
+- Un job en cola de un proyecto sin adaptador **se conserva** (aviso una vez): el proyecto puede faltar solo en esta
+  configuración. Un fallo al arrancar un job concreto lo marca `failed` sin detener al resto de la cola.
+- **Un job que no termina no bloquea la cola para siempre.** El `RunContext` lleva un `AbortSignal` que se aborta al
+  cancelar o agotar el tiempo de la fase (no se puede perder, a diferencia de `executor.cancel`, que mata los
+  procesos). Tras cancelar hay un plazo de gracia (30 s) y, pasado, el planificador abandona la fase, llama a
+  `cleanup` y termina el job. El límite por fase es opcional (`phaseTimeoutMs`): una compilación de APK puede tardar.
+- Al apagar el servicio los jobs en ejecución se **cancelan** (terminan `cancelled`, no huérfanos) y se espera hasta
+  10 s antes de cerrar la base; lo que quede lo concilia el siguiente arranque.
 - Para Detox `devices` es exclusivo: un job a la vez. El paralelismo entre proyectos llega en M5; requiere un
   planificador (no el `shiftNext` del orquestador).
 
 ### 2.3 Registro de proyectos
 
-Un YAML por instalación (`E2E_SERVICE_CONFIG`), validado al arrancar:
+Un archivo JSON por instalación (`E2E_SERVICE_CONFIG`), validado al arrancar. Es JSON y no YAML porque leer YAML
+exige una dependencia que no está aprobada; el formato queda aislado en la carga de configuración, así que
+cambiarlo después es un cambio local.
 
-```yaml
-projects:
-  detox:
-    adapter: detox
-    repo: git@git.example.com:formos/detox-testing.git
-    allowedBranches: ["iteration_*", "main"]   # '*' no cruza '/'; se aplica sobre el nombre de rama
-    defaultBranch: iteration_1                 # rama que Configuración muestra al abrir
+```json
+{
+  "projects": {
+    "detox": {
+      "adapter": "detox",
+      "repo": "git@git.example.com:formos/detox-testing.git",
+      "allowedBranches": ["iteration_*", "main"],
+      "defaultBranch": "iteration_1"
+    }
+  }
+}
 ```
 
-Los directorios de trabajo van en variables de entorno del adaptador (sección 3), no en el YAML.
+`*` no cruza `/` y se aplica sobre el nombre de rama. `defaultBranch` es la rama que Configuración muestra al abrir y
+debe cumplir `allowedBranches`. Los directorios de trabajo van en variables de entorno del adaptador (sección 3), no en
+este archivo.
 
 ## 3. Repositorios del catálogo de Detox: dos carpetas fijas
 
@@ -125,22 +141,42 @@ Reglas:
    del mismo repositorio (`git rev-parse --git-common-dir` idéntico, así un `fetch` sirve a las dos), y son
    **distintas**: se comparan rutas reales (`realpath`, sin distinguir mayúsculas donde el sistema no lo hace) y se
    rechaza que sean la misma, que una contenga a la otra o que sean enlaces a la misma carpeta.
-   `orch.rc.json` se exige en cada `prepareRun`/`browse` (depende del commit), no al arrancar.
+   También se comprueba que cada carpeta sea la **raíz** de un árbol de trabajo (no una subcarpeta), que esté **limpia**
+   (la carpeta de ejecución se resetea antes de cada job: un clon de desarrollo con trabajo sin guardar se rechaza al
+   arrancar, no se borra después), que `origin` sea el repositorio configurado del proyecto (se comparan como
+   `host/ruta`, sin credenciales, esquema, puerto ni `.git`) y que tenga `orch.rc.json` (en cada `prepareRun`/`browse`
+   se vuelve a exigir, porque depende del commit). `E2E_SERVICE_DATA_DIR` no puede estar dentro de ninguna de las dos.
 3. El commit se resuelve y se **fija al encolar** (`ref` -> `sha`). El job corre siempre con ese sha; reintentar usa el
-   mismo. Para que un `gc` o un force-push no lo borre, al fijarlo se crea `refs/e2e/jobs/<id>` y se elimina cuando
-   el job termina y deja de poder reintentarse (política de retención en STA-28).
-4. `resolve` solo acepta nombres de rama: valida con `git check-ref-format --branch`, aplica `allowedBranches` y
-   resuelve `refs/remotes/origin/<rama>^{commit}`. Etiquetas y shas directos no se aceptan como `ref`. Todos los
-   comandos git llevan `--end-of-options` antes de refs y el sha se vuelve a validar (`^[0-9a-f]{40}$`).
-5. `prepareRun(sha)` solo se ejecuta cuando el runner está libre: `checkout --detach -f`, `clean -fdx` (conservando
-   `node_modules` y `builds/`) y `npm ci` si cambió el hash del lockfile, falta `node_modules` o cambió la versión de
-   Node. `npm ci` ejecuta scripts del repositorio como el usuario del servicio: quien pueda subir a una rama permitida
-   puede ejecutar código en el host del lab; `allowedBranches` es un control de seguridad, no solo de comodidad.
+   mismo. Para que un `gc` o un force-push no lo borre, al fijarlo se crea `refs/e2e/pins/<sha>` (por commit, no por
+   job: varios jobs pueden compartirlo). `release(sha)` lo quita si el job no llegó a crearse y `prunePins(keep)`
+   libera todos los que ningún job necesita; la política de retención (cuánto tiempo se puede reintentar un job)
+   decide qué conjunto `keep` se pasa, y se cablea con el despliegue (STA-36).
+4. `resolve` solo acepta nombres de rama: valida la forma (como `check-ref-format`, sin `HEAD`), aplica
+   `allowedBranches` y resuelve `refs/remotes/origin/<rama>^{commit}`. Etiquetas, `HEAD` y shas directos no se aceptan
+   como `ref`. Un commit se vuelve a validar como `^[0-9a-f]{40}$` antes de cada comando git y los comandos se ejecutan
+   con la lista de argumentos, sin shell.
+5. `prepareRun(sha)` solo se ejecuta cuando el runner está libre (su único llamador es el ejecutor de Detox, que el
+   planificador corre de a un job por el recurso `devices`) y **solo para un commit fijado** con `pin` (`refs/e2e/pins`):
+   eso demuestra que vino de una rama permitida y que sigue existiendo, y cierra el hueco entre fijar y ejecutar.
+   Hace `checkout --detach --force` y `clean -ffd` (se borran las ediciones, los archivos sin seguimiento y los
+   repositorios anidados; los **ignorados**, como `node_modules`, `builds/`, `.env` y los reportes, se conservan) y
+   `npm ci` si cambió el hash del lockfile, falta `node_modules` o cambió la versión de Node o la plataforma (la marca
+   vive dentro de `node_modules`, así que borrarlo fuerza una instalación nueva; sin `package-lock.json` se rechaza).
+   Toda la preparación tiene su propio cerrojo: dos preparaciones nunca se intercalan, y navegar o hacer `fetch` (el
+   mutex de git) no espera a la instalación. `npm ci` ejecuta scripts del repositorio como el usuario del servicio:
+   quien pueda subir a una rama permitida puede ejecutar código en el host del lab; `allowedBranches` es un control de
+   seguridad, no solo de comodidad. Por eso se ejecuta con un entorno **mínimo** (sin los secretos del servicio) y con
+   `--include=dev` aunque `NODE_ENV=production`. El servicio se despliega en Linux o macOS: en Windows `npm` es un
+   `.cmd` que Node no lanza sin shell.
 6. Todas las operaciones git sobre el repositorio compartido van detrás de **un mutex en el proceso**
    (`fetch`, `browse`, `prepareRun`, `pin`): comparten refs y paquetes y pueden pelear por `packed-refs.lock`.
 7. La carpeta de consulta puede cambiar de rama con un job corriendo: no comparten árbol de trabajo.
 8. Acceso a los repos con llave de despliegue **de solo lectura**. Se documenta como responsabilidad del despliegue
-   (STA-36); el servicio nunca hace `push`.
+   (STA-36); el servicio nunca hace `push`. Git nunca pregunta (sin prompts, ssh en `BatchMode`), salvo que el despliegue
+   fije su propio comando ssh (`GIT_SSH_COMMAND` o `core.sshCommand` con la llave): entonces no se toca. Las variables
+   que redirigen git (`GIT_DIR`, `GIT_WORK_TREE`, ...) se quitan del entorno, y las URLs con credenciales no se
+   repiten en los mensajes de error. Un error real de git (timeout, repositorio dañado) nunca se confunde con "no
+   existe": solo el código de salida que git usa para "ausente" cuenta como respuesta.
 
 Interfaz estable para poder pasar luego a una carpeta por commit sin tocar el resto: `TargetCatalog` (arriba) más
 `prepareRun(sha)`, interno del adaptador.
@@ -186,23 +222,35 @@ locks(resource TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id))
 schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)
 ```
 
-Migraciones: archivos `.sql` numerados, cada uno en una transacción.
+Migraciones: objetos TypeScript numerados 1, 2, 3... (así `tsc` las incluye sin paso de copia), cada una en una
+transacción que vuelve a comprobar la versión bajo el bloqueo de escritura, por si otro proceso arranca a la vez. El
+servicio se niega a abrir una base más nueva que su código. Una migración que reconstruya una tabla
+(`PRAGMA foreign_keys=OFF`) no puede ir dentro de una transacción: habrá que tratarla aparte.
 
 Estados de `jobs.status`: `queued`, `running` (incluye la preparación: checkout y `npm ci` ocurren con los recursos
 tomados), `cancelling`, `succeeded`, `failed`, `cancelled`.
 
 Transiciones válidas (cualquier otra la rechaza el repositorio de jobs):
-- `queued -> running | cancelled`
+- `queued -> running | cancelled | failed` (`failed` para un job en cola cuyo commit ya no existe)
 - `running -> succeeded | failed | cancelling`
 - `cancelling -> cancelled | failed` (`cancel_requested_at` se fija al pasar a `cancelling`)
 - Un fallo de preparación es `running -> failed`: se llama a `cleanup` y se liberan los recursos.
+- El estado final debe ir respaldado por sus datos: `succeeded` exige `outcome` success o warning y todas las fases
+  terminadas; `failed` exige un `error` y registra `outcome` failure. `outcome` y `error` solo se añaden, nunca se
+  borran ni se sobrescriben: gana la primera causa.
+- Una fase solo avanza (`pending -> running -> terminada`) y solo mientras el job está `running` o `cancelling`; al
+  terminar el job, las fases abiertas pasan a `failed`/`skipped` (o `cancelled`) en la misma transacción que libera
+  los recursos. Lo mismo para el `pid`: solo un job vivo puede tenerlo.
+- `cancelling -> cancelling` no es una transición: el servicio lo trata como idempotente (200) leyendo antes el estado,
+  y traduce la carrera con `InvalidTransitionError` a 409.
 - Cancelar un job ya terminal devuelve 409; cancelar uno en `cancelling` es idempotente (200).
 - Reintentar solo se permite sobre un job terminal (409 en caso contrario): crea un job nuevo con el mismo sha,
   parámetros y recursos, y `retry_of` apuntando al original.
 
-**Reconciliación al arrancar:** por cada job `running` o `cancelling`: si hay `pid`, se mata el árbol de procesos
-(el árbol puede seguir vivo tras un crash y mantener ocupados dispositivos y puertos), se llama a `cleanup`, el job
-pasa a `failed` ("servicio reiniciado durante la fase X") y se liberan sus recursos. La cola `queued` se conserva;
+**Reconciliación al arrancar:** por cada job `running` o `cancelling`: el adaptador recibe el `pid` registrado para
+limpiar (el árbol de procesos puede seguir vivo tras un crash y mantener ocupados dispositivos y puertos). Un job
+`running` pasa a `failed` ("servicio reiniciado durante la fase X") y uno `cancelling` pasa a `cancelled` (la
+cancelación ya estaba pedida); en ambos casos se liberan sus recursos. La cola `queued` se conserva;
 un `queued` cuyo sha ya no existe pasa a `failed` ("commit no disponible").
 
 ## 5. API v1
@@ -217,8 +265,8 @@ Todo bajo `/v1`, JSON. El nombre del proyecto va en la ruta: el núcleo no tiene
 | GET | `/v1/projects/:id/refs` | ramas permitidas |
 | POST | `/v1/projects/:id/browse` `{ref}` | posiciona la consulta |
 | GET | `/v1/projects/:id/targets` | escenarios de lo consultado |
-| POST | `/v1/jobs` `{project, ref, target, params?}` | fija el sha, valida y encola |
-| GET | `/v1/jobs` | filtros project, ref, target, status; `limit` y cursor |
+| POST | `/v1/jobs` `{project, target, ref?, kind?, params?}` | valida, fija el sha y encola (201) |
+| GET | `/v1/jobs` | filtros project, ref, target, status (`a,b`); `limit` (1-200) y cursor `before` |
 | GET | `/v1/jobs/:id` | estado, fases, resultado |
 | POST | `/v1/jobs/:id/cancel` | cancela (cola o ejecución) |
 | POST | `/v1/jobs/:id/retry` | nuevo job con el mismo sha y parámetros |
@@ -226,6 +274,34 @@ Todo bajo `/v1`, JSON. El nombre del proyecto va en la ruta: el núcleo no tiene
 | GET | `/v1/jobs/:id/report/*` | reporte, por id de job |
 | POST | `/v1/jobs/:id/stream-ticket` | ticket de un solo uso para el WebSocket |
 | WS | `/v1/jobs/:id/stream?ticket=...&from=<byte>` | repetición + en vivo, sin duplicados ni huecos |
+
+Orden de las validaciones en `POST /v1/jobs`: proyecto -> rama permitida (lista del servicio, no del adaptador) ->
+`kind` -> nombre del escenario -> parámetros (esquema estricto del adaptador) -> `pin(ref)` (resuelve y protege el
+commit) -> encolar. Nada se crea si falla un paso. Los campos desconocidos del cuerpo se rechazan; el cuerpo no puede
+pasar de 64 KB. `ref` y `kind` son opcionales (rama por defecto del proyecto, primer `kind` del adaptador).
+
+Errores: `{ statusCode, error, message }`.
+
+| Código | `error` | Cuándo |
+|---|---|---|
+| 400 | `invalid_request` | cuerpo o filtros mal formados, escenario o parámetros inválidos |
+| 401 | | falta o es inválida la API key |
+| 403 | `ref_not_allowed` | rama fuera de `allowedBranches` o con nombre inseguro |
+| 404 | `unknown_project`, `job_not_found` | proyecto sin configurar o sin adaptador; job inexistente |
+| 409 | `job_finished`, `invalid_transition` | cancelar un job ya terminado |
+| 413 | `payload_too_large` | cuerpo mayor de 64 KB |
+| 422 | `ref_not_found` | rama permitida que no existe (un `fetch` puede traerla) |
+| 500 | `internal_error` | cualquier otro; el detalle va al log, nunca al cliente |
+
+La respuesta de un job no incluye rutas del servidor (`log_path`, `report_path`) ni el `pid`. Los filtros de
+`GET /v1/jobs` son estrictos: una clave desconocida (`?stauts=queued`), un valor repetido o `limit` mayor de 200 dan
+400, en vez de devolver todos los jobs. Los mensajes de error de Nest y del analizador de JSON nunca se devuelven tal
+cual (pueden citar la petición): solo el texto estándar del código. Se comprueban por forma y no con `instanceof`,
+porque el adaptador HTTP se carga como módulo ES con su propia copia de `@nestjs/common`. El cuerpo se analiza antes de
+autenticar (máximo 64 KB, y nginx limita antes); una petición sin clave con JSON roto recibe 400 en vez de 401.
+
+Si `pin(ref)` tuvo éxito pero el job no llegó a crearse, el servicio llama a `release(sha)` para no dejar el commit
+protegido sin un job que lo use.
 
 ## 6. Seguridad
 
