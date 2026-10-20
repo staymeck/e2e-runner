@@ -181,6 +181,7 @@ export class JobScheduler implements QueueListener {
 
     let failure: string | undefined;
     let warned = false;
+    let reportPath: string | undefined;
     try {
       for (const phase of job.phases) {
         if (this.store.get(job.id)?.status === "cancelling") break;
@@ -194,6 +195,7 @@ export class JobScheduler implements QueueListener {
           signal: result.signal ?? null,
           outcome: result.outcome,
         });
+        reportPath = result.reportPath ?? reportPath;
         if (result.outcome === "failure") {
           failure = result.error ?? `Phase "${phase.name}" failed (exit code ${result.exitCode ?? "none"})`;
           break;
@@ -206,7 +208,7 @@ export class JobScheduler implements QueueListener {
       // Before the resources are released: the next job must not start on top of leftovers.
       await this.cleanUp(executor, job.id);
     }
-    this.finish(job.id, failure, warned);
+    this.finish(job.id, failure, warned, reportPath);
   }
 
   /** Runs one phase, ending it early if the adapter throws, the phase times out, or a cancel is ignored. */
@@ -275,11 +277,12 @@ export class JobScheduler implements QueueListener {
   }
 
   /** Records the final status. If that is refused, still get the job out of `running`, or it would hold its resources forever. */
-  private finish(id: string, failure: string | undefined, warned: boolean): void {
+  private finish(id: string, failure: string | undefined, warned: boolean, reportPath: string | undefined): void {
+    const report = reportPath === undefined ? {} : { reportPath };
     try {
-      if (this.store.get(id)?.status === "cancelling") this.store.transition(id, "cancelled");
-      else if (failure !== undefined) this.store.transition(id, "failed", { error: failure });
-      else this.store.transition(id, "succeeded", { outcome: warned ? "warning" : "success" });
+      if (this.store.get(id)?.status === "cancelling") this.store.transition(id, "cancelled", report);
+      else if (failure !== undefined) this.store.transition(id, "failed", { error: failure, ...report });
+      else this.store.transition(id, "succeeded", { outcome: warned ? "warning" : "success", ...report });
       return;
     } catch (error) {
       this.diagnostics.error({ job: id, error: describeError(error) }, "could not record the final status");
