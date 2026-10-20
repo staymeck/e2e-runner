@@ -1,3 +1,6 @@
+import { createDetoxCatalog } from "./adapters/detox/create-catalog";
+import { DETOX_ADAPTER } from "./adapters/detox/detox-config";
+import { NpmInstaller } from "./adapters/detox/dependency-installer";
 import { createApp } from "./app";
 import { loadConfig } from "./config/load-config";
 import { AdapterRegistry } from "./core/adapter";
@@ -7,6 +10,7 @@ import { JobService } from "./core/job-service";
 import { ConfigError } from "./core/problems";
 import { openDatabase } from "./db/open-database";
 import { SqliteJobStore } from "./db/sqlite-job-store";
+import { ExecCommandRunner } from "./infra/exec-command-runner";
 import { PinoNestLogger, createLogger } from "./logging/logger";
 
 const SHUTDOWN_DRAIN_MS = 10_000;
@@ -14,6 +18,14 @@ const SHUTDOWN_DRAIN_MS = 10_000;
 async function main(): Promise<void> {
   const logger = createLogger();
   const config = loadConfig(process.env);
+
+  // Stops here, with every problem listed, if the two catalog folders are not two worktrees of the project's repository.
+  const detoxProject = config.projects.find((project) => project.adapter === DETOX_ADAPTER);
+  if (config.detox && detoxProject) {
+    const runner = new ExecCommandRunner();
+    // The Detox adapter (STA-38) takes this catalog; for now it is only checked.
+    await createDetoxCatalog(config.detox, detoxProject, runner, new NpmInstaller(runner));
+  }
 
   const db = openDatabase(config.dataDir);
   const store = new SqliteJobStore(db);

@@ -29,7 +29,8 @@ function isWellFormed(text: string, chars: RegExp): boolean {
 }
 
 export function isValidBranchName(name: string): boolean {
-  return isWellFormed(name, NAME_CHARS);
+  // git refuses a branch called HEAD, and `origin/HEAD` is a pointer to the default branch, not a branch
+  return name !== "HEAD" && isWellFormed(name, NAME_CHARS);
 }
 
 export function isValidBranchPattern(pattern: string): boolean {

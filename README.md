@@ -38,6 +38,20 @@ Las dos carpetas de Detox deben existir, ser rutas absolutas y **distintas** (no
 dentro de la otra). `E2E_SERVICE_DATA_DIR` tampoco puede estar dentro de ninguna de las dos, ni contenerlas: un `checkout`
 o un `git clean` borraría la base de datos.
 
+### Crear las dos carpetas de Detox
+
+El servicio **no** las crea: quien despliega las prepara una vez, como dos *worktrees* del mismo clon, para que un
+`fetch` sirva a las dos y los commits fijados sean visibles en ambas:
+
+```bash
+git clone git@git.example.com:formos/detox-testing.git e2e-detox-runner
+git -C e2e-detox-runner worktree add --detach ../e2e-detox-info origin/iteration_1
+```
+
+Con un par de `git clone` separados el servicio se niega a arrancar. La llave SSH de despliegue debe ser de solo
+lectura; el servicio nunca hace `push`. Git no pregunta nunca por contraseñas (`GIT_TERMINAL_PROMPT=0`, ssh en modo
+`BatchMode`).
+
 En el JSON, `repo` acepta `ssh://`, `https://`, `file://` o `usuario@host:ruta`; las ramas y patrones se validan como
 nombres de rama de git, y una clave desconocida en un proyecto se rechaza.
 

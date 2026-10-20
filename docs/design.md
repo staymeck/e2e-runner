@@ -141,22 +141,42 @@ Reglas:
    del mismo repositorio (`git rev-parse --git-common-dir` idéntico, así un `fetch` sirve a las dos), y son
    **distintas**: se comparan rutas reales (`realpath`, sin distinguir mayúsculas donde el sistema no lo hace) y se
    rechaza que sean la misma, que una contenga a la otra o que sean enlaces a la misma carpeta.
-   `orch.rc.json` se exige en cada `prepareRun`/`browse` (depende del commit), no al arrancar.
+   También se comprueba que cada carpeta sea la **raíz** de un árbol de trabajo (no una subcarpeta), que esté **limpia**
+   (la carpeta de ejecución se resetea antes de cada job: un clon de desarrollo con trabajo sin guardar se rechaza al
+   arrancar, no se borra después), que `origin` sea el repositorio configurado del proyecto (se comparan como
+   `host/ruta`, sin credenciales, esquema, puerto ni `.git`) y que tenga `orch.rc.json` (en cada `prepareRun`/`browse`
+   se vuelve a exigir, porque depende del commit). `E2E_SERVICE_DATA_DIR` no puede estar dentro de ninguna de las dos.
 3. El commit se resuelve y se **fija al encolar** (`ref` -> `sha`). El job corre siempre con ese sha; reintentar usa el
-   mismo. Para que un `gc` o un force-push no lo borre, al fijarlo se crea `refs/e2e/jobs/<id>` y se elimina cuando
-   el job termina y deja de poder reintentarse (política de retención en STA-28).
-4. `resolve` solo acepta nombres de rama: valida con `git check-ref-format --branch`, aplica `allowedBranches` y
-   resuelve `refs/remotes/origin/<rama>^{commit}`. Etiquetas y shas directos no se aceptan como `ref`. Todos los
-   comandos git llevan `--end-of-options` antes de refs y el sha se vuelve a validar (`^[0-9a-f]{40}$`).
-5. `prepareRun(sha)` solo se ejecuta cuando el runner está libre: `checkout --detach -f`, `clean -fdx` (conservando
-   `node_modules` y `builds/`) y `npm ci` si cambió el hash del lockfile, falta `node_modules` o cambió la versión de
-   Node. `npm ci` ejecuta scripts del repositorio como el usuario del servicio: quien pueda subir a una rama permitida
-   puede ejecutar código en el host del lab; `allowedBranches` es un control de seguridad, no solo de comodidad.
+   mismo. Para que un `gc` o un force-push no lo borre, al fijarlo se crea `refs/e2e/pins/<sha>` (por commit, no por
+   job: varios jobs pueden compartirlo). `release(sha)` lo quita si el job no llegó a crearse y `prunePins(keep)`
+   libera todos los que ningún job necesita; la política de retención (cuánto tiempo se puede reintentar un job)
+   decide qué conjunto `keep` se pasa, y se cablea con el despliegue (STA-36).
+4. `resolve` solo acepta nombres de rama: valida la forma (como `check-ref-format`, sin `HEAD`), aplica
+   `allowedBranches` y resuelve `refs/remotes/origin/<rama>^{commit}`. Etiquetas, `HEAD` y shas directos no se aceptan
+   como `ref`. Un commit se vuelve a validar como `^[0-9a-f]{40}$` antes de cada comando git y los comandos se ejecutan
+   con la lista de argumentos, sin shell.
+5. `prepareRun(sha)` solo se ejecuta cuando el runner está libre (su único llamador es el ejecutor de Detox, que el
+   planificador corre de a un job por el recurso `devices`) y **solo para un commit fijado** con `pin` (`refs/e2e/pins`):
+   eso demuestra que vino de una rama permitida y que sigue existiendo, y cierra el hueco entre fijar y ejecutar.
+   Hace `checkout --detach --force` y `clean -ffd` (se borran las ediciones, los archivos sin seguimiento y los
+   repositorios anidados; los **ignorados**, como `node_modules`, `builds/`, `.env` y los reportes, se conservan) y
+   `npm ci` si cambió el hash del lockfile, falta `node_modules` o cambió la versión de Node o la plataforma (la marca
+   vive dentro de `node_modules`, así que borrarlo fuerza una instalación nueva; sin `package-lock.json` se rechaza).
+   Toda la preparación tiene su propio cerrojo: dos preparaciones nunca se intercalan, y navegar o hacer `fetch` (el
+   mutex de git) no espera a la instalación. `npm ci` ejecuta scripts del repositorio como el usuario del servicio:
+   quien pueda subir a una rama permitida puede ejecutar código en el host del lab; `allowedBranches` es un control de
+   seguridad, no solo de comodidad. Por eso se ejecuta con un entorno **mínimo** (sin los secretos del servicio) y con
+   `--include=dev` aunque `NODE_ENV=production`. El servicio se despliega en Linux o macOS: en Windows `npm` es un
+   `.cmd` que Node no lanza sin shell.
 6. Todas las operaciones git sobre el repositorio compartido van detrás de **un mutex en el proceso**
    (`fetch`, `browse`, `prepareRun`, `pin`): comparten refs y paquetes y pueden pelear por `packed-refs.lock`.
 7. La carpeta de consulta puede cambiar de rama con un job corriendo: no comparten árbol de trabajo.
 8. Acceso a los repos con llave de despliegue **de solo lectura**. Se documenta como responsabilidad del despliegue
-   (STA-36); el servicio nunca hace `push`.
+   (STA-36); el servicio nunca hace `push`. Git nunca pregunta (sin prompts, ssh en `BatchMode`), salvo que el despliegue
+   fije su propio comando ssh (`GIT_SSH_COMMAND` o `core.sshCommand` con la llave): entonces no se toca. Las variables
+   que redirigen git (`GIT_DIR`, `GIT_WORK_TREE`, ...) se quitan del entorno, y las URLs con credenciales no se
+   repiten en los mensajes de error. Un error real de git (timeout, repositorio dañado) nunca se confunde con "no
+   existe": solo el código de salida que git usa para "ausente" cuenta como respuesta.
 
 Interfaz estable para poder pasar luego a una carpeta por commit sin tocar el resto: `TargetCatalog` (arriba) más
 `prepareRun(sha)`, interno del adaptador.

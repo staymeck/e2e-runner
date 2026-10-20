@@ -126,6 +126,12 @@ describe("loadConfig", () => {
     }
   });
 
+  it("allows a single project per adapter: the Detox folders come from the environment", () => {
+    const second = { ...validProjects.projects.detox };
+    const problems = problemsOf(envWith(), { projects: { detox: validProjects.projects.detox, "detox-two": second } });
+    assert.ok(problems.some((p) => p.includes('Only one project may use the "detox" adapter')));
+  });
+
   it("requires the default branch to be allowed", () => {
     const project = { ...validProjects.projects.detox, defaultBranch: "other" };
     assert.ok(problemsOf(envWith(), { projects: { detox: project } }).some((p) => p.includes("matched by allowedBranches")));
