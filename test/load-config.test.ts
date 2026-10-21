@@ -172,6 +172,38 @@ describe("loadConfig", () => {
   });
 });
 
+describe("loadConfig: E2E_WEB_USERS", () => {
+  it("is optional: an unset value means no one can log in to the web, but the service still starts", () => {
+    assert.deepEqual(loadConfig(envWith(), readProjects(validProjects)).webUsers, []);
+  });
+
+  it("parses username:password:role entries", () => {
+    const config = loadConfig(envWith({ E2E_WEB_USERS: "ana:supersecret1:e2e-mobile,bob:supersecret2:admin" }), readProjects(validProjects));
+    assert.deepEqual(config.webUsers, [
+      { username: "ana", password: "supersecret1", role: "e2e-mobile" },
+      { username: "bob", password: "supersecret2", role: "admin" },
+    ]);
+  });
+
+  it("allows a password that itself contains ':'", () => {
+    const config = loadConfig(envWith({ E2E_WEB_USERS: "ana:pass:word:with:colons:e2e-mobile" }), readProjects(validProjects));
+    assert.equal(config.webUsers[0]?.password, "pass:word:with:colons");
+  });
+
+  it("rejects an entry with too few parts, an unknown role, a duplicate username and a too-short password", () => {
+    assert.ok(problemsOf(envWith({ E2E_WEB_USERS: "ana:onlytwoparts" })).some((p) => p.includes("expected username:password:role")));
+    assert.ok(problemsOf(envWith({ E2E_WEB_USERS: "ana:supersecret1:superadmin" })).some((p) => p.includes('invalid role "superadmin"')));
+    assert.ok(problemsOf(envWith({ E2E_WEB_USERS: "ana:supersecret1:admin,ana:supersecret2:e2e-mobile" })).some((p) => p.includes('duplicate username "ana"')));
+    assert.ok(problemsOf(envWith({ E2E_WEB_USERS: "ana:short:e2e-mobile" })).some((p) => p.includes("at least 8 characters")));
+    assert.ok(problemsOf(envWith({ E2E_WEB_USERS: "a n a:supersecret1:admin" })).some((p) => p.includes('invalid username "a n a"')));
+  });
+
+  it("never repeats a password in its problem messages", () => {
+    const secret = "unique-password-string";
+    for (const problem of problemsOf(envWith({ E2E_WEB_USERS: `ana:${secret}:bogus-role` }))) assert.ok(!problem.includes(secret));
+  });
+});
+
 describe("loadConfig: Detox folders", () => {
   it("requires both folders", () => {
     assert.ok(problemsOf(envWith({ E2E_DETOX_RUNNER_DIR: undefined })).some((p) => p.includes("E2E_DETOX_RUNNER_DIR is required")));

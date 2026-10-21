@@ -14,8 +14,14 @@ Problemas que resuelve:
 - Un historial de jobs que sobrevive reinicios (hoy: mapa en memoria + `meta.json`).
 - Cambiar de rama para consultar sin romper un job en ejecución.
 
-Fuera de alcance: ejecutar varios jobs de Detox en paralelo (dispositivos y puertos WS son físicos), contenerizar el
-servicio (necesita `adb`/USB y el socket de Docker del host) y usuarios individuales (hay una clave compartida).
+Fuera de alcance: ejecutar varios jobs de Detox en paralelo (dispositivos y puertos WS son físicos) y contenerizar el
+servicio (necesita `adb`/USB y el socket de Docker del host).
+
+**Usuarios individuales (actualizado en STA-34):** la decisión original de esta sección era "no hay, solo una clave
+compartida". STA-34 la revierte a pedido del usuario: la web necesita una pantalla de login con roles
+(`e2e-mobile`/`e2e-cypress`/`admin`). Ver §6 y la fila correspondiente en §11 — la clave compartida (`apiKeys`) sigue
+existiendo igual que antes, sin cambios, para los clientes de máquina (CLI, futuro n8n de STA-35); los usuarios son
+un mecanismo aparte, solo para la web.
 
 ### 1.1 Lo que el orquestador tiene hoy y qué pasa con ello
 
@@ -312,6 +318,15 @@ protegido sin un job que lo use.
   clave y acepta dos claves a la vez para poder rotarla. Los navegadores no pueden poner cabeceras en un WebSocket:
   se usa un **ticket de un solo uso y vida corta**, obtenido con un POST autenticado; la clave de larga vida nunca va
   en la URL (nginx la registraría).
+- **Login de la web (STA-34), aparte de la API key:** `POST /v1/auth/login` (username+password contra una lista fija
+  en `E2E_WEB_USERS`, mismo modelo de confianza que la API key: texto plano en una variable de entorno, nunca
+  logueado, comparado con `timingSafeEqual` incluso para un usuario que no existe) devuelve un token de sesión
+  (`WebSessions`, en memoria, TTL de 12h — igual que `StreamTickets`, un restart desloguea a todos sin daño). Ese
+  token viaja también como `Authorization: Bearer`, y `AuthGuard` (antes `ApiKeyGuard`) prueba primero la API key y
+  luego una sesión: una sesión válida nunca abre más que su rol, una API key válida sigue abriendo todo (los clientes
+  de máquina no cambian). `@Roles(...)` en un controlador exige uno de esos roles o `admin`; no tiene efecto sobre
+  una petición con API key. `GET /v1/auth/me` y `POST /v1/auth/logout` completan el ciclo para la web (restaurar
+  sesión al recargar, cerrar sesión).
 - **Enlaces abribles** (log, reporte): token por job, solo lectura, con expiración, como el `accessToken` del
   orquestador. Distinto de la API key.
 - **Transporte:** el servicio escucha en localhost; nginx pone TLS y el límite de tamaño de cuerpo y de tasa.
@@ -403,10 +418,15 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 | `test/webhook-dispatch.test.ts` solo prueba el camino de fallo (host `.invalid`, nunca resuelve) | El original del orquestador no tenía ninguna prueba de `dispatch.ts` (solo `sign`/`url-guard`/`payload`, igual que pide el criterio de aceptación de STA-32), y `assertWebhookDestinationSafe` bloquea `127.0.0.1` a propósito (anti-SSRF), así que un servidor de prueba local sería rechazado como el ataque real que el guard previene. El camino de éxito (un POST real a un receptor) no tiene prueba aquí; queda para cuando STA-35 cablee esto contra un receptor de verdad |
 | `postJobWebhookEvent` recibe un `Diagnostics` genérico opcional (silencioso por defecto) y loguea cada entrega fallida | El original logueaba con el `Logger` de Nest; como esta carpeta no debe depender de Nest, se perdía toda visibilidad de fallos de webhook. El agente de review lo marcó como should-fix; se corrigió reusando la interfaz `Diagnostics` que ya existe en `core/` |
 | `fetch` sigue redirects 3xx sin volver a pasar la URL final por `assertWebhookDestinationSafe` | Hueco de SSRF heredado del original (no introducido aquí: el orquestador tampoco fijaba `redirect: "manual"`). Si un subscriptor legítimo responde con una redirección hacia una IP interna, `fetch` la sigue sin re-validar. Queda para STA-35: fijar `redirect: "manual"` y tratar cualquier 3xx como fallo al cablear el dispatch real |
+| STA-34: `E2E_WEB_USERS` es una lista fija en texto plano (`usuario:password:rol`, separada por comas; el password puede contener `:`, solo el usuario y el rol no), no una tabla en SQLite | El usuario eligió este modelo explícitamente (mismo nivel de confianza que `E2E_SERVICE_API_KEY`, sin alta/gestión propia); evita una dependencia nueva de hashing (bcrypt/argon2) y migra nada en la base. Se agregó a `SERVICE_SECRET_NAMES` para que nunca llegue a un proceso hijo de Detox, el mismo bug que se encontró y arregló en STA-38 |
+| `WebSessions` en memoria (no SQLite), TTL fijo de 12h, igual patrón que `StreamTickets` | Un restart del servicio desloguea a todos sin daño (solo hay que volver a entrar); nada fuera de este proceso necesita leer una sesión. Evita una tabla nueva y la complejidad de session storage distribuido, que no hace falta para un solo proceso |
+| `AuthGuard` reemplaza a `ApiKeyGuard` como `APP_GUARD`: prueba la API key primero, luego una sesión de usuario | Una sola puerta de entrada en vez de dos guards encadenados; una petición con API key sigue abriendo todo (sin romper la CLI ni el futuro n8n de STA-35), y `@Roles(...)` solo restringe una sesión de usuario, nunca una API key |
+| `admin` no tiene ningún permiso adicional hoy, más allá de que no lo bloquea ningún `@Roles(...)` | El usuario lo pidió así explícitamente ("nada más por ahora"); si más adelante necesita gestionar usuarios o actuar sobre jobs de otros, es una decisión nueva, no asumida de antemano |
+| `ProjectsController` y `JobsController` llevan `@Roles("e2e-mobile")` a nivel de clase | Hoy Detox es el único proyecto; un usuario `e2e-cypress` no tiene nada que hacer ahí todavía (Cypress no está construido). Es a propósito más estricto que "ocultar en la UI": el rol se exige también en el servidor |
+| `AuthGuard` inyecta `Reflector` con `@Inject(Reflector)` explícito, no por tipo | `tsx`/esbuild no emite `design:paramtypes`; sin un token explícito, Nest no puede resolverlo y el guard fallaba con un 500 en **cada** petición (encontrado al correr la batería de pruebas tras implementarlo, antes de la revisión) |
 
 ## 12. Preguntas abiertas
 
-- Aprobar React/Vite para la web (STA-34).
 - Retención de las refs `refs/e2e/jobs/*` y de logs/reportes antiguos (se resuelve en STA-28 y STA-36).
 - Idioma de la documentación: este documento está en español; el código y los identificadores, en inglés.
 - Redacción de secretos **por valor** en los logs de job (la sección 6 la promete; STA-38 solo filtra por nombre de

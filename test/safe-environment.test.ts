@@ -13,6 +13,11 @@ describe("childEnvironment", () => {
     assert.deepEqual(result, { PATH: "/usr/bin", SOME_OTHER_VAR: "kept" });
   });
 
+  it("removes the web login passwords too: they must never reach a Detox child process", () => {
+    const result = childEnvironment({ PATH: "/usr/bin", E2E_WEB_USERS: "ana:supersecret1:admin" });
+    assert.deepEqual(result, { PATH: "/usr/bin" });
+  });
+
   it("drops variables that are present but undefined", () => {
     const result = childEnvironment({ PATH: "/usr/bin", GHOST: undefined });
     assert.deepEqual(result, { PATH: "/usr/bin" });
