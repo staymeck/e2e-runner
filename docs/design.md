@@ -290,6 +290,7 @@ Errores: `{ statusCode, error, message }`.
 | 404 | `unknown_project`, `job_not_found` | proyecto sin configurar o sin adaptador; job inexistente |
 | 404 | `catalog_unsupported` | el proyecto existe pero su adaptador no ofrece navegar su catálogo (STA-42) |
 | 409 | `job_finished`, `invalid_transition` | cancelar un job ya terminado |
+| 409 | `retry_not_allowed` | reintentar un job que no terminó todavía (STA-43) |
 | 413 | `payload_too_large` | cuerpo mayor de 64 KB |
 | 422 | `ref_not_found` | rama permitida que no existe (un `fetch` puede traerla) |
 | 422 | `catalog_unavailable` | el catálogo no puede responder ahora mismo (commit sin `orch.rc.json`, rama anterior al comando `scenarios`, dependencias de esa carpeta sin instalar) — esperado, no un bug (STA-42) |
@@ -383,6 +384,9 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 | Entorno de los procesos hijos: todo `process.env` del servicio, menos `E2E_SERVICE_API_KEY`/`_NEXT` por nombre exacto | `perfect-qa` hereda lo mismo que el servicio (no corre con entorno mínimo, a diferencia de git/npm); una lista blanca rompería variables que hoy necesita y no están catalogadas |
 | Puerto `ProjectCatalog` nuevo en `core/adapter.ts` (`fetch`/`refs`/`browse`/`targets`), opcional (`ProjectAdapter.browsable`), para STA-42 | El núcleo necesitaba una forma genérica de exponer el catálogo sin conocer Detox; se llamó `browsable` y no `catalog` porque `DetoxAdapter` ya usaba ese nombre para su `CatalogWorkspaces` interno |
 | `targets()` siempre lista lo que el último `browse()` dejó posicionado, sin recibir una rama de nuevo | Coherente con que el servicio tiene una sola carpeta de consulta fija; `browse` y `targets` son un par con estado, igual que el resto del diseño de las dos carpetas |
+| `retry` nunca vuelve a pinnear: reusa el `sha` del job original directamente, sin pasar por `refs.pin(ref)` | "Mismo commit" significa el mismo commit, no el commit actual de esa rama; `RefPinner.pin` solo resuelve por nombre de rama, así que un retry no puede (ni debe) usarlo |
+| `retry` no vuelve a pasar por `isBranchAllowed`, `validateRequest` ni la lista de `kinds` del adaptador: reusa los campos del job original tal cual | Coherente con "mismo exacto" (proyecto/rama/kind/escenario/parámetros); si la política de un proyecto se endurece después, un retry de un job viejo sigue aceptándose con sus parámetros de entonces — consciente, no un descuido |
+| `JobService.retry` no repite el chequeo `isTerminal` que ya hace `assertRetryable` dentro de `JobStore.create` | Eran exactamente el mismo chequeo con el mismo error; mantenerlo en `JobService` además sufría un TOCTOU (leía el estado antes de la transacción de `create`, podía rechazar un retry que para el momento de escribir ya era válido). Una sola fuente de verdad, más permisiva-correcta |
 
 ## 12. Preguntas abiertas
 
@@ -392,3 +396,6 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 - Redacción de secretos **por valor** en los logs de job (la sección 6 la promete; STA-38 solo filtra por nombre de
   variable antes de arrancar el proceso, no inspecciona lo que `perfect-qa` imprime). Revisar antes de exponer los
   logs por la web o por API (STA-31), por si algo imprime un secreto que no sea la API key del servicio.
+- STA-43 menciona "los logs de cualquier job siguen disponibles siempre (en vivo si corre, repetición si terminó)"
+  en su alcance; eso es exactamente lo que entrega STA-31 (`GET /v1/jobs/:id/log` y el WebSocket). STA-43 en sí
+  solo agrega `retry`; servir el log de un job ya escrito por `FileJobLog` queda para STA-31, no se adelantó aquí.
