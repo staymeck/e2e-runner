@@ -90,6 +90,26 @@ export class JobService {
     return this.canceller.cancel(id);
   }
 
+  /**
+   * Queues a new job with the original's project, kind, branch, target and parameters, pointed at the
+   * exact same commit (never re-pinned: a retry proves nothing about the branch's tip today). Only a
+   * finished job may be retried; `get` gives the clearer JobNotFoundError for a missing one, and the
+   * store's own `assertRetryable` (shared with every other caller of `create`) is the single place that
+   * enforces "finished", so that rule can never drift between the two.
+   */
+  retry(id: string): Job {
+    const original = this.get(id);
+    return this.enqueuer.enqueue({
+      project: original.project,
+      kind: original.kind,
+      ref: original.ref,
+      sha: original.sha,
+      target: original.target,
+      params: original.params,
+      retryOf: id,
+    });
+  }
+
   projects(): readonly ProjectPolicy[] {
     return [...this.policies.values()];
   }

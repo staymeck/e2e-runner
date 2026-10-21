@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { CatalogUnsupportedError, UnknownProjectError } from "../src/core/adapter";
-import { JobAlreadyFinishedError, JobNotFoundError } from "../src/core/job";
+import { JobAlreadyFinishedError, JobNotFoundError, RetryNotAllowedError } from "../src/core/job";
 import { InvalidJobRequestError, RefNotAllowedError, RefNotFoundError } from "../src/core/job-request";
 import { FakeExecutor, FakeProjectCatalog, FakeRefs, OK, SHA_MAIN, fakeAdapter } from "./helpers/fake-adapter";
 import { buildService } from "./helpers/service";
@@ -168,5 +168,46 @@ describe("JobService.catalogOf", () => {
     assert.deepEqual(await found.refs(), ["main"]);
     assert.deepEqual(await found.browse("main"), { sha: "main-sha00000000000000000000000000000000" });
     assert.deepEqual(await found.targets(), [{ id: "login", title: null }]);
+  });
+});
+
+describe("JobService.retry", () => {
+  it("queues a new job with the original's project, ref, kind, target and params, pointed at the same commit", async () => {
+    const refs = new FakeRefs({ main: "1".repeat(40) });
+    const ctx = buildService(fakeAdapter("detox", ["devices"], undefined, refs));
+    const original = await ctx.service.submit({ project: "detox", ref: "main", kind: "build", target: "t", params: { retries: 2 } });
+    await ctx.adapter.executor.finish(original.id, OK);
+
+    refs.commits.main = "2".repeat(40); // the branch moved: a retry must not notice
+    const retried = ctx.service.retry(original.id);
+
+    assert.notEqual(retried.id, original.id);
+    assert.equal(retried.retryOf, original.id);
+    assert.deepEqual([retried.project, retried.ref, retried.kind, retried.target, retried.params, retried.sha], ["detox", "main", "build", "t", { retries: 2 }, "1".repeat(40)]);
+    assert.deepEqual(refs.pinned, ["main"], "retry must never call pin() again");
+    await ctx.adapter.executor.finish(retried.id, OK);
+  });
+
+  it("refuses to retry a job that is still queued or running", async () => {
+    const ctx = buildService();
+    const running = await ctx.service.submit({ project: "detox", ref: "main", target: "t" });
+    assert.throws(() => ctx.service.retry(running.id), RetryNotAllowedError);
+    await ctx.adapter.executor.finish(running.id, OK);
+  });
+
+  it("refuses to retry an unknown job", () => {
+    const ctx = buildService();
+    assert.throws(() => ctx.service.retry("ghost"), JobNotFoundError);
+  });
+
+  it("a retry can itself be retried", async () => {
+    const ctx = buildService();
+    const first = await ctx.service.submit({ project: "detox", ref: "main", target: "t" });
+    await ctx.adapter.executor.finish(first.id, OK);
+    const second = ctx.service.retry(first.id);
+    await ctx.adapter.executor.finish(second.id, OK);
+    const third = ctx.service.retry(second.id);
+    assert.equal(third.retryOf, second.id);
+    await ctx.adapter.executor.finish(third.id, OK);
   });
 });

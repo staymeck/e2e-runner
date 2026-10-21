@@ -3,7 +3,7 @@ import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Injec
 import type { Response } from "express";
 import { CatalogUnsupportedError, UnknownProjectError } from "../core/adapter";
 import { DIAGNOSTICS, type Diagnostics } from "../core/diagnostics";
-import { InvalidTransitionError, JobAlreadyFinishedError, JobNotFoundError } from "../core/job";
+import { InvalidTransitionError, JobAlreadyFinishedError, JobNotFoundError, RetryNotAllowedError } from "../core/job";
 import { CatalogReadError, InvalidJobRequestError, RefNotAllowedError, RefNotFoundError } from "../core/job-request";
 
 interface Mapping {
@@ -22,6 +22,7 @@ const MAPPINGS: readonly Mapping[] = [
   { type: RefNotFoundError, status: HttpStatus.UNPROCESSABLE_ENTITY, code: "ref_not_found" },
   { type: CatalogReadError, status: HttpStatus.UNPROCESSABLE_ENTITY, code: "catalog_unavailable" },
   { type: JobAlreadyFinishedError, status: HttpStatus.CONFLICT, code: "job_finished" },
+  { type: RetryNotAllowedError, status: HttpStatus.CONFLICT, code: "retry_not_allowed" },
   { type: InvalidTransitionError, status: HttpStatus.CONFLICT, code: "invalid_transition" },
   // InvalidDetailsError is deliberately absent: it means the service itself passed bad data, a bug to log (500).
 ];

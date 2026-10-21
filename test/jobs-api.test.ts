@@ -430,6 +430,38 @@ describe("POST /v1/jobs/:id/cancel", () => {
   });
 });
 
+describe("POST /v1/jobs/:id/retry", () => {
+  it("queues a new job (201) with the same ref, kind, target and params, pointed at the same commit", async () => {
+    await withApi(async (api) => {
+      const original = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", kind: "build", target: "t", params: { retries: 1 } }));
+      await api.adapter.executor.finish(original.id, OK);
+
+      const response = await api.call("POST", `/v1/jobs/${original.id}/retry`);
+      assert.equal(response.status, 201);
+      const retried = (await response.json()) as JobBody & { retryOf: string | null };
+      assert.notEqual(retried.id, original.id);
+      assert.deepEqual([retried.retryOf, retried.ref, retried.kind, retried.target, retried.params, retried.sha], [original.id, "main", "build", "t", { retries: 1 }, original.sha]);
+      await api.adapter.executor.finish(retried.id, OK);
+    });
+  });
+
+  it("answers 409 retry_not_allowed for a job that has not finished yet", async () => {
+    await withApi(async (api) => {
+      const running = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      const response = await api.call("POST", `/v1/jobs/${running.id}/retry`);
+      assert.equal(response.status, 409);
+      assert.equal(((await response.json()) as { error: string }).error, "retry_not_allowed");
+      await api.adapter.executor.finish(running.id, OK);
+    });
+  });
+
+  it("answers 404 for an unknown job", async () => {
+    await withApi(async (api) => {
+      assert.equal((await api.call("POST", "/v1/jobs/ghost/retry")).status, 404);
+    });
+  });
+});
+
 /** The base URL is only needed for the one request that cannot go through `call`. */
 async function baseOf(api: Api): Promise<string> {
   const response = await api.call("GET", "/v1/health");

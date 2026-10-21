@@ -29,4 +29,9 @@ export class JobsController {
   async cancel(@Param("id") id: string): Promise<JobView> {
     return toJobView(await this.jobs.cancel(id));
   }
+
+  @Post(":id/retry")
+  retry(@Param("id") id: string): JobView {
+    return toJobView(this.jobs.retry(id));
+  }
 }
