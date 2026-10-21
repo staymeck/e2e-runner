@@ -1,20 +1,27 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
+import * as path from "node:path";
+import { WebSocket } from "ws";
 import { createApp } from "../src/app";
 import type { ProjectCatalog } from "../src/core/adapter";
 import type { ServiceConfig } from "../src/config/service-config";
 import { CatalogReadError } from "../src/core/job-request";
+import { FileJobLog } from "../src/infra/file-job-log";
 import { FakeProjectCatalog, FakeRefs, OK, fakeAdapter, type FakeAdapter } from "./helpers/fake-adapter";
 import { buildService } from "./helpers/service";
+import { scratchDir } from "./helpers/workspace";
 
 const KEY = "current-key-0123456789";
 const config: ServiceConfig = { server: { host: "127.0.0.1", port: 0 }, apiKeys: [KEY], dataDir: "/unused", projects: [], detox: undefined };
+const logsRoot = scratchDir();
+let logsCounter = 0;
 
 interface Api {
   readonly ctx: ReturnType<typeof buildService>;
   readonly adapter: FakeAdapter;
   readonly logged: string[];
+  readonly logs: FileJobLog;
   call(method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<Response>;
   submit(body: unknown): Promise<Response>;
   json<T>(response: Promise<Response>): Promise<T>;
@@ -24,8 +31,10 @@ interface Api {
 async function withApi(run: (api: Api) => Promise<void>, adapter: FakeAdapter = fakeAdapter("detox", ["devices"])): Promise<void> {
   const ctx = buildService(adapter);
   const logged: string[] = [];
+  const logs = new FileJobLog(path.join(logsRoot, `${logsCounter++}`));
   const app = await createApp(config, {
     jobs: ctx.service,
+    logs,
     diagnostics: { info: () => undefined, warn: () => undefined, error: (_fields, message) => logged.push(message) },
   });
   await app.listen(0, "127.0.0.1");
@@ -37,7 +46,7 @@ async function withApi(run: (api: Api) => Promise<void>, adapter: FakeAdapter = 
       ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
     });
   try {
-    await run({ ctx, adapter, logged, call, submit: (body) => call("POST", "/v1/jobs", body), json: async (response) => (await response).json() as never });
+    await run({ ctx, adapter, logged, logs, call, submit: (body) => call("POST", "/v1/jobs", body), json: async (response) => (await response).json() as never });
   } finally {
     await app.close();
   }
@@ -459,6 +468,98 @@ describe("POST /v1/jobs/:id/retry", () => {
     await withApi(async (api) => {
       assert.equal((await api.call("POST", "/v1/jobs/ghost/retry")).status, 404);
     });
+  });
+});
+
+describe("GET /v1/jobs/:id/log", () => {
+  it("reads the whole log by default, and only what came after a given offset", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      api.logs.append(job.id, "hello ");
+
+      const whole = await api.json<{ text: string; nextFrom: number }>(api.call("GET", `/v1/jobs/${job.id}/log`));
+      assert.deepEqual(whole, { text: "hello ", nextFrom: 6 });
+
+      api.logs.append(job.id, "world");
+      const rest = await api.json<{ text: string; nextFrom: number }>(api.call("GET", `/v1/jobs/${job.id}/log?from=${whole.nextFrom}`));
+      assert.deepEqual(rest, { text: "world", nextFrom: 11 });
+
+      await api.adapter.executor.finish(job.id, OK);
+    });
+  });
+
+  it("reads as empty for a job that exists but has not logged anything yet", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      assert.deepEqual(await api.json(api.call("GET", `/v1/jobs/${job.id}/log`)), { text: "", nextFrom: 0 });
+      await api.adapter.executor.finish(job.id, OK);
+    });
+  });
+
+  it("answers 404 for an unknown job", async () => {
+    await withApi(async (api) => {
+      assert.equal((await api.call("GET", "/v1/jobs/ghost/log")).status, 404);
+    });
+  });
+
+  it("answers 400 for a negative or non-numeric from, and for an unknown query key", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      for (const query of ["from=-1", "from=abc", "oops=1"]) {
+        assert.equal((await api.call("GET", `/v1/jobs/${job.id}/log?${query}`)).status, 400, query);
+      }
+      await api.adapter.executor.finish(job.id, OK);
+    });
+  });
+});
+
+describe("POST /v1/jobs/:id/stream-ticket", () => {
+  it("issues a ticket for an existing job (200)", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      const response = await api.call("POST", `/v1/jobs/${job.id}/stream-ticket`);
+      assert.equal(response.status, 201);
+      const body = (await response.json()) as { ticket: string };
+      assert.ok(body.ticket.length >= 32);
+      await api.adapter.executor.finish(job.id, OK);
+    });
+  });
+
+  it("answers 404 for an unknown job, and issues no ticket", async () => {
+    await withApi(async (api) => {
+      assert.equal((await api.call("POST", "/v1/jobs/ghost/stream-ticket")).status, 404);
+    });
+  });
+});
+
+describe("GET .../stream: shutdown", () => {
+  it("closes an open stream cleanly (code 1001) when the app shuts down, not with a raw 1006", async () => {
+    // Regression test: Express's own shutdown (inside app.close()) force-destroys every open socket,
+    // upgraded WebSockets included, before the HTTP server's own "close" event fires. Detaching the
+    // log stream only on that event was too late; app.close() must detach it first. This needs the
+    // real app (not just attachLogStream against a bare http.Server) to exercise Express's own
+    // shutdown path, so it is built directly here instead of through `withApi`, which closes the app
+    // itself on a schedule this test cannot observe.
+    const ctx = buildService();
+    const app = await createApp(config, { jobs: ctx.service, logs: new FileJobLog(path.join(logsRoot, `shutdown-${logsCounter++}`)) });
+    await app.listen(0, "127.0.0.1");
+    const base = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}`;
+
+    const job = await ctx.service.submit({ project: "detox", ref: "main", target: "t" });
+    const ticketResponse = await fetch(`${base}/v1/jobs/${job.id}/stream-ticket`, { method: "POST", headers: { authorization: `Bearer ${KEY}` } });
+    const { ticket } = (await ticketResponse.json()) as { ticket: string };
+
+    const ws = new WebSocket(`${base.replace("http", "ws")}/v1/jobs/${job.id}/stream?ticket=${ticket}`);
+    const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code)));
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
+
+    await app.close();
+    // A regression that stops the socket from closing must fail this test, not hang the whole run.
+    const code = await Promise.race([closed, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the stream never closed")), 5000))]);
+    assert.equal(code, 1001);
   });
 });
 

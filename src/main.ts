@@ -31,6 +31,8 @@ async function main(): Promise<void> {
   const db = openDatabase(config.dataDir);
   const store = new SqliteJobStore(db);
   const adapters = new AdapterRegistry();
+  // One log store for every project's jobs: GET .../log and the stream WebSocket don't know or care which adapter wrote it.
+  const jobLog = new FileJobLog(path.join(config.dataDir, JOB_LOGS_SUBDIR), logger);
 
   // Stops here, with every problem listed, if the two catalog folders are not two worktrees of the project's repository.
   const detoxProject = config.projects.find((project) => project.adapter === DETOX_ADAPTER);
@@ -44,7 +46,7 @@ async function main(): Promise<void> {
           host: new NodeProcessHost(runner),
           lister: new CliScenarioLister(runner, childEnvironment, process.execPath, SERVICE_SECRET_NAMES),
           containers: new DockerBakeContainers(runner, logger),
-          log: new FileJobLog(path.join(config.dataDir, JOB_LOGS_SUBDIR), logger),
+          log: jobLog,
           environment: childEnvironment,
           diagnostics: logger,
         },
@@ -58,7 +60,7 @@ async function main(): Promise<void> {
   const jobs = new JobService(config.projects, adapters, new JobEnqueuer(store, adapters, scheduler), scheduler, store);
   // Running jobs are cancelled and given a moment to end before the database goes away.
   const onShutdown = [() => scheduler.shutdown(SHUTDOWN_DRAIN_MS), () => db.close()];
-  const app = await createApp(config, { jobs, diagnostics: logger, onShutdown }, new PinoNestLogger(logger));
+  const app = await createApp(config, { jobs, logs: jobLog, diagnostics: logger, onShutdown }, new PinoNestLogger(logger));
   await app.listen(config.server.port, config.server.host);
   logger.info({ host: config.server.host, port: config.server.port, projects: config.projects.map((p) => p.id) }, "e2e-runner listening");
 }

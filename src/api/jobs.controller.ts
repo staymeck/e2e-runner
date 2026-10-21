@@ -1,11 +1,17 @@
 import { Body, Controller, Get, HttpCode, Inject, Param, Post, Query } from "@nestjs/common";
+import { STREAM_TICKETS, StreamTickets } from "../auth/stream-ticket";
+import { JOB_LOG_READER, type JobLogReader, type LogChunk } from "../core/job-log";
 import { JOB_SERVICE, type JobService } from "../core/job-service";
 import { toJobView, type JobView } from "./job-view";
-import { parseList, parseSubmit } from "./request-parsing";
+import { parseList, parseLogFrom, parseSubmit } from "./request-parsing";
 
 @Controller("v1/jobs")
 export class JobsController {
-  constructor(@Inject(JOB_SERVICE) private readonly jobs: JobService) {}
+  constructor(
+    @Inject(JOB_SERVICE) private readonly jobs: JobService,
+    @Inject(JOB_LOG_READER) private readonly logs: JobLogReader,
+    @Inject(STREAM_TICKETS) private readonly tickets: StreamTickets,
+  ) {}
 
   @Post()
   async submit(@Body() body: unknown): Promise<JobView> {
@@ -33,5 +39,18 @@ export class JobsController {
   @Post(":id/retry")
   retry(@Param("id") id: string): JobView {
     return toJobView(this.jobs.retry(id));
+  }
+
+  @Get(":id/log")
+  log(@Param("id") id: string, @Query() query: Record<string, unknown>): LogChunk {
+    this.jobs.get(id); // 404 for an unknown job, same as every other :id route
+    return this.logs.read(id, parseLogFrom(query));
+  }
+
+  /** A one-time, short-lived ticket to open .../stream: a WebSocket handshake cannot carry an Authorization header. */
+  @Post(":id/stream-ticket")
+  streamTicket(@Param("id") id: string): { ticket: string } {
+    this.jobs.get(id);
+    return { ticket: this.tickets.issue(id) };
   }
 }

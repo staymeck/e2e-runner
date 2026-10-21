@@ -58,3 +58,56 @@ describe("FileJobLog", () => {
     assert.ok(!fs.existsSync(path.join(root, "escaped.log")), "nothing must be written outside the log folder");
   });
 });
+
+describe("FileJobLog.read", () => {
+  it("reads nothing for a job that has never logged anything", () => {
+    const log = new FileJobLog(path.join(root, "f"));
+    assert.deepEqual(log.read("ghost"), { text: "", nextFrom: 0 });
+  });
+
+  it("reads the whole log from the start by default", () => {
+    const log = new FileJobLog(path.join(root, "g"));
+    log.append("job-1", "hello world");
+    assert.deepEqual(log.read("job-1"), { text: "hello world", nextFrom: 11 });
+  });
+
+  it("resumes from a byte offset, giving only what was appended since", () => {
+    const log = new FileJobLog(path.join(root, "h"));
+    log.append("job-1", "first");
+    const first = log.read("job-1");
+    log.append("job-1", "-second");
+    const second = log.read("job-1", first.nextFrom);
+    assert.deepEqual(second, { text: "-second", nextFrom: 12 });
+  });
+
+  it("reads nothing new when asked again at the current end", () => {
+    const log = new FileJobLog(path.join(root, "i"));
+    log.append("job-1", "hello");
+    const first = log.read("job-1");
+    assert.deepEqual(log.read("job-1", first.nextFrom), { text: "", nextFrom: first.nextFrom });
+  });
+
+  it("clamps an offset past the end instead of reading garbage or throwing", () => {
+    const log = new FileJobLog(path.join(root, "j"));
+    log.append("job-1", "hi");
+    assert.deepEqual(log.read("job-1", 1000), { text: "", nextFrom: 2 });
+  });
+
+  it("clamps a negative offset to the start, instead of a position-dependent read", () => {
+    const log = new FileJobLog(path.join(root, "j2"));
+    log.append("job-1", "hi");
+    assert.deepEqual(log.read("job-1", -5), { text: "hi", nextFrom: 2 });
+  });
+
+  it("never throws for an unsafe job id, reading as if nothing was logged", () => {
+    const log = new FileJobLog(path.join(root, "k"));
+    assert.deepEqual(log.read("../escaped"), { text: "", nextFrom: 0 });
+    assert.deepEqual(log.read("../escaped", 5), { text: "", nextFrom: 5 });
+  });
+
+  it("round-trips non-ASCII text without corrupting it", () => {
+    const log = new FileJobLog(path.join(root, "l"));
+    log.append("job-1", "línea á 日本語 🙂");
+    assert.equal(log.read("job-1").text, "línea á 日本語 🙂");
+  });
+});

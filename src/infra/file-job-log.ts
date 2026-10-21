@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { silentDiagnostics, type Diagnostics } from "../core/diagnostics";
-import type { JobLog } from "../core/job-log";
+import type { JobLog, JobLogReader, LogChunk } from "../core/job-log";
 
 /** A job id is always one path segment: never empty, never `.`/`..`, never containing a separator. */
 function isSafeJobId(jobId: string): boolean {
@@ -14,7 +14,7 @@ function isSafeJobId(jobId: string): boolean {
  * diagnostics instead). The id is not expected to be attacker-controlled (the store generates it), but
  * `pathOf` is public, so it defends itself rather than trust every future caller to pass a clean id.
  */
-export class FileJobLog implements JobLog {
+export class FileJobLog implements JobLog, JobLogReader {
   private ready = false;
 
   constructor(
@@ -38,5 +38,27 @@ export class FileJobLog implements JobLog {
   pathOf(jobId: string): string {
     if (!isSafeJobId(jobId)) throw new Error(`Not a valid job id: ${JSON.stringify(jobId)}`);
     return path.join(this.dir, `${jobId}.log`);
+  }
+
+  /**
+   * Never throws: a job with no log yet, an unsafe id, or a read error all read as an empty chunk at
+   * the same `from`, so a caller can always retry later rather than branch on an error.
+   */
+  read(jobId: string, from = 0): LogChunk {
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(this.pathOf(jobId), "r");
+      const size = fs.fstatSync(fd).size;
+      const start = Math.max(0, Math.min(from, size));
+      const length = size - start;
+      if (length <= 0) return { text: "", nextFrom: size };
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, start);
+      return { text: buffer.toString("utf8"), nextFrom: size };
+    } catch {
+      return { text: "", nextFrom: from };
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
   }
 }
