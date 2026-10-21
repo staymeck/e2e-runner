@@ -1,4 +1,4 @@
-import type { JobRequestInput, PhaseResult, PhaseRun, ProjectAdapter, RefPinner, RunContext, RunExecutor } from "../../src/core/adapter";
+import type { CatalogTarget, JobRequestInput, PhaseResult, PhaseRun, ProjectAdapter, ProjectCatalog, RefPinner, RunContext, RunExecutor } from "../../src/core/adapter";
 import { InvalidJobRequestError, RefNotFoundError } from "../../src/core/job-request";
 
 interface Pending {
@@ -106,6 +106,38 @@ export class FakeRefs implements RefPinner {
 }
 
 export const SHA_MAIN = "a".repeat(40);
+
+/** A browsable catalog whose branches and targets the test chooses, recording what was asked of it. */
+export class FakeProjectCatalog implements ProjectCatalog {
+  fetched = 0;
+  browsed: string[] = [];
+  private current: string | undefined;
+
+  constructor(
+    private readonly branches: readonly string[] = ["main", "iteration_1"],
+    private readonly targetsByBranch: Record<string, readonly CatalogTarget[]> = {},
+  ) {}
+
+  async fetch(): Promise<void> {
+    this.fetched++;
+  }
+
+  async refs(): Promise<readonly string[]> {
+    return this.branches;
+  }
+
+  async browse(ref: string): Promise<{ sha: string }> {
+    if (!this.branches.includes(ref)) throw new RefNotFoundError(ref);
+    this.browsed.push(ref);
+    this.current = ref;
+    return { sha: `${ref}-sha`.padEnd(40, "0").slice(0, 40) };
+  }
+
+  async targets(): Promise<readonly CatalogTarget[]> {
+    if (!this.current) throw new InvalidJobRequestError("browse a branch before listing its targets");
+    return this.targetsByBranch[this.current] ?? [];
+  }
+}
 
 export interface FakeAdapter extends ProjectAdapter {
   readonly executor: FakeExecutor;

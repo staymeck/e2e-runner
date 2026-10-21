@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { UnknownProjectError } from "../src/core/adapter";
+import { CatalogUnsupportedError, UnknownProjectError } from "../src/core/adapter";
 import { JobAlreadyFinishedError, JobNotFoundError } from "../src/core/job";
 import { InvalidJobRequestError, RefNotAllowedError, RefNotFoundError } from "../src/core/job-request";
-import { FakeExecutor, FakeRefs, OK, SHA_MAIN, fakeAdapter } from "./helpers/fake-adapter";
+import { FakeExecutor, FakeProjectCatalog, FakeRefs, OK, SHA_MAIN, fakeAdapter } from "./helpers/fake-adapter";
 import { buildService } from "./helpers/service";
 
 const nothingCreated = (ctx: ReturnType<typeof buildService>) => assert.equal(ctx.store.list().jobs.length, 0);
@@ -146,5 +146,27 @@ describe("JobService reads and cancel", () => {
 
   it("lists the configured projects", () => {
     assert.deepEqual(buildService().service.projects().map((p) => p.id), ["detox", "web"]);
+  });
+});
+
+describe("JobService.catalogOf", () => {
+  it("rejects an unknown project, and a configured one whose adapter is not registered", () => {
+    const ctx = buildService();
+    assert.throws(() => ctx.service.catalogOf("ghost"), UnknownProjectError);
+    assert.throws(() => ctx.service.catalogOf("web"), UnknownProjectError);
+  });
+
+  it("reports a registered adapter that has no browsable catalog", () => {
+    const ctx = buildService(fakeAdapter("detox", ["devices"])); // no `browsable` attached
+    assert.throws(() => ctx.service.catalogOf("detox"), CatalogUnsupportedError);
+  });
+
+  it("returns the adapter's own catalog when it has one", async () => {
+    const catalog = new FakeProjectCatalog(["main"], { main: [{ id: "login", title: null }] });
+    const ctx = buildService({ ...fakeAdapter("detox", ["devices"]), browsable: catalog });
+    const found = ctx.service.catalogOf("detox");
+    assert.deepEqual(await found.refs(), ["main"]);
+    assert.deepEqual(await found.browse("main"), { sha: "main-sha00000000000000000000000000000000" });
+    assert.deepEqual(await found.targets(), [{ id: "login", title: null }]);
   });
 });

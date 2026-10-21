@@ -42,6 +42,12 @@ export interface CatalogWorkspaces extends RefPinner {
   /** Positions the browsing folder on the branch's commit. Never touches the run folder. */
   browse(ref: string): Promise<Workspace>;
   /**
+   * Runs `fn` with the browsing folder's path, holding the same lock `browse` and `fetch` use, so it
+   * never reads that folder while a checkout or a clean is rewriting it. For anything that reads the
+   * browsing folder outside of `browse` itself (e.g. listing what a branch offers).
+   */
+  withBrowseLock<T>(fn: (dir: string) => Promise<T>): Promise<T>;
+  /**
    * Positions the run folder on exactly this (pinned) commit and installs its dependencies. It force-checks-out
    * and cleans the folder, so it must only be called between jobs: the one caller is the Detox executor, which
    * the scheduler runs one job at a time (the `devices` resource).
@@ -69,6 +75,10 @@ export class GitCatalogWorkspaces implements CatalogWorkspaces {
 
   fetch(): Promise<void> {
     return this.git.run(() => this.browseRepo.fetch());
+  }
+
+  withBrowseLock<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+    return this.git.run(() => fn(this.browseRepo.dir));
   }
 
   refs(): Promise<string[]> {

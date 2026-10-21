@@ -288,9 +288,11 @@ Errores: `{ statusCode, error, message }`.
 | 401 | | falta o es inválida la API key |
 | 403 | `ref_not_allowed` | rama fuera de `allowedBranches` o con nombre inseguro |
 | 404 | `unknown_project`, `job_not_found` | proyecto sin configurar o sin adaptador; job inexistente |
+| 404 | `catalog_unsupported` | el proyecto existe pero su adaptador no ofrece navegar su catálogo (STA-42) |
 | 409 | `job_finished`, `invalid_transition` | cancelar un job ya terminado |
 | 413 | `payload_too_large` | cuerpo mayor de 64 KB |
 | 422 | `ref_not_found` | rama permitida que no existe (un `fetch` puede traerla) |
+| 422 | `catalog_unavailable` | el catálogo no puede responder ahora mismo (commit sin `orch.rc.json`, rama anterior al comando `scenarios`, dependencias de esa carpeta sin instalar) — esperado, no un bug (STA-42) |
 | 500 | `internal_error` | cualquier otro; el detalle va al log, nunca al cliente |
 
 La respuesta de un job no incluye rutas del servidor (`log_path`, `report_path`) ni el `pid`. Los filtros de
@@ -379,6 +381,8 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 | Rutas genéricas por proyecto | El núcleo no conoce Detox |
 | `JobLog` real: un archivo de texto por job bajo `dataDir/logs`, sin servirlo todavía | Construido en STA-38 porque el adaptador lo necesita para no perder la salida de `perfect-qa`; servirlo por API con token y expiración es STA-31 |
 | Entorno de los procesos hijos: todo `process.env` del servicio, menos `E2E_SERVICE_API_KEY`/`_NEXT` por nombre exacto | `perfect-qa` hereda lo mismo que el servicio (no corre con entorno mínimo, a diferencia de git/npm); una lista blanca rompería variables que hoy necesita y no están catalogadas |
+| Puerto `ProjectCatalog` nuevo en `core/adapter.ts` (`fetch`/`refs`/`browse`/`targets`), opcional (`ProjectAdapter.browsable`), para STA-42 | El núcleo necesitaba una forma genérica de exponer el catálogo sin conocer Detox; se llamó `browsable` y no `catalog` porque `DetoxAdapter` ya usaba ese nombre para su `CatalogWorkspaces` interno |
+| `targets()` siempre lista lo que el último `browse()` dejó posicionado, sin recibir una rama de nuevo | Coherente con que el servicio tiene una sola carpeta de consulta fija; `browse` y `targets` son un par con estado, igual que el resto del diseño de las dos carpetas |
 
 ## 12. Preguntas abiertas
 

@@ -64,6 +64,28 @@ export interface JobRequestInput {
   readonly params: unknown;
 }
 
+/** What a catalog offers about one thing a job can be queued for (a scenario, a build target, ...). */
+export interface CatalogTarget {
+  readonly id: string;
+  readonly title: string | null;
+}
+
+/**
+ * Lets a client browse a project's catalog before queueing a job: which branches exist, and what can be
+ * run on the one currently browsed. `browse` and `targets` are a pair: `targets` always answers for
+ * whatever `browse` last positioned the catalog at, the way the service's one browsing folder works.
+ */
+export interface ProjectCatalog {
+  /** Brings new branches from the remote. */
+  fetch(): Promise<void>;
+  /** Remote branches this project allows. */
+  refs(): Promise<readonly string[]>;
+  /** Positions the catalog's browsing folder on this branch's commit. Throws RefNotAllowedError or RefNotFoundError. */
+  browse(ref: string): Promise<{ readonly sha: string }>;
+  /** What can be queued on whatever `browse` last positioned the catalog at. Throws InvalidJobRequestError if nothing was browsed yet. */
+  targets(): Promise<readonly CatalogTarget[]>;
+}
+
 export interface ProjectAdapter {
   readonly id: string;
   /** Resources every job of this project needs exclusively (e.g. `devices`). */
@@ -73,10 +95,22 @@ export interface ProjectAdapter {
   readonly refs: RefPinner;
   readonly executor: RunExecutor;
   /**
+   * Browsing a catalog ahead of queueing a job (branches, then what can be queued on one). Optional for a
+   * future adapter that cannot offer it (e.g. an early Cucumber adapter); every adapter has it today.
+   */
+  readonly browsable?: ProjectCatalog;
+  /**
    * The project's own check of a request, with a strict schema (unknown keys rejected). Returns the
    * parameters to store. Throws InvalidJobRequestError.
    */
   validateRequest(request: JobRequestInput): unknown;
+}
+
+export class CatalogUnsupportedError extends Error {
+  constructor(readonly project: string) {
+    super(`Project "${project}" has no browsable catalog`);
+    this.name = "CatalogUnsupportedError";
+  }
 }
 
 export class UnknownProjectError extends Error {

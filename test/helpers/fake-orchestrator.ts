@@ -98,6 +98,9 @@ export class FakeCatalog implements CatalogWorkspaces {
   async prunePins(): Promise<number> {
     return 0;
   }
+  async withBrowseLock<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+    return fn(this.dir);
+  }
   async pin(ref: string): Promise<string> {
     const sha = this.commits[ref];
     if (!sha) throw new RefNotFoundError(ref);

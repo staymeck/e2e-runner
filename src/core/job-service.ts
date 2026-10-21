@@ -1,4 +1,4 @@
-import { UnknownProjectError, type AdapterLookup } from "./adapter";
+import { CatalogUnsupportedError, UnknownProjectError, type AdapterLookup, type ProjectCatalog } from "./adapter";
 import { isBranchAllowed } from "./branch-pattern";
 import { JobNotFoundError, type Job, type JobFilter, type JobList, type JobPage } from "./job";
 import type { JobEnqueuer } from "./job-enqueuer";
@@ -92,5 +92,13 @@ export class JobService {
 
   projects(): readonly ProjectPolicy[] {
     return [...this.policies.values()];
+  }
+
+  /** The project's catalog, for browsing branches and what can be queued on one. Throws UnknownProjectError or CatalogUnsupportedError. */
+  catalogOf(id: string): ProjectCatalog {
+    if (!this.policies.has(id)) throw new UnknownProjectError(id);
+    const browsable = this.adapters.get(id).browsable;
+    if (!browsable) throw new CatalogUnsupportedError(id);
+    return browsable;
   }
 }
