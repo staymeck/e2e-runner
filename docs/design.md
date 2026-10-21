@@ -377,9 +377,14 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 | Servicio fuera de Docker | Necesita `adb`/USB y el socket de Docker del host |
 | El adaptador no escribe en la base | El núcleo es la única fuente de verdad |
 | Rutas genéricas por proyecto | El núcleo no conoce Detox |
+| `JobLog` real: un archivo de texto por job bajo `dataDir/logs`, sin servirlo todavía | Construido en STA-38 porque el adaptador lo necesita para no perder la salida de `perfect-qa`; servirlo por API con token y expiración es STA-31 |
+| Entorno de los procesos hijos: todo `process.env` del servicio, menos `E2E_SERVICE_API_KEY`/`_NEXT` por nombre exacto | `perfect-qa` hereda lo mismo que el servicio (no corre con entorno mínimo, a diferencia de git/npm); una lista blanca rompería variables que hoy necesita y no están catalogadas |
 
 ## 12. Preguntas abiertas
 
 - Aprobar React/Vite para la web (STA-34).
 - Retención de las refs `refs/e2e/jobs/*` y de logs/reportes antiguos (se resuelve en STA-28 y STA-36).
 - Idioma de la documentación: este documento está en español; el código y los identificadores, en inglés.
+- Redacción de secretos **por valor** en los logs de job (la sección 6 la promete; STA-38 solo filtra por nombre de
+  variable antes de arrancar el proceso, no inspecciona lo que `perfect-qa` imprime). Revisar antes de exponer los
+  logs por la web o por API (STA-31), por si algo imprime un secreto que no sea la API key del servicio.

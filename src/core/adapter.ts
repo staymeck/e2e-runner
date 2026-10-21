@@ -13,6 +13,8 @@ export interface PhaseResult {
   /** `failure` stops the job; `warning` and `success` let it continue. */
   readonly outcome: Outcome;
   readonly error?: string;
+  /** Where the phase left its report on the server; the last one a job reports is kept on the job. */
+  readonly reportPath?: string;
 }
 
 export interface RunContext {
