@@ -8,3 +8,17 @@ export interface JobLog {
 }
 
 export const silentJobLog: JobLog = { append: () => undefined };
+
+export interface LogChunk {
+  readonly text: string;
+  /** Byte offset to resume from on the next read: always the log's length at the moment it was read. */
+  readonly nextFrom: number;
+}
+
+export const JOB_LOG_READER = Symbol("JOB_LOG_READER");
+
+/** The read side of a job's log: replay from a byte offset, and the live tail polls the same way. */
+export interface JobLogReader {
+  /** The log from byte offset `from` (default 0) to its current end. A job with no log yet reads as empty. */
+  read(jobId: string, from?: number): LogChunk;
+}

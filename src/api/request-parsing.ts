@@ -85,6 +85,16 @@ export function parseList(query: Record<string, unknown>): { filter: JobFilter; 
   };
 }
 
+const KNOWN_LOG_QUERY_KEYS: readonly string[] = ["from"];
+
+/** Validates the query of GET /v1/jobs/:id/log: only `from`, a byte offset of 0 or more. */
+export function parseLogFrom(query: Record<string, unknown>): number {
+  for (const key of Object.keys(query)) {
+    if (!KNOWN_LOG_QUERY_KEYS.includes(key)) throw new InvalidJobRequestError(`unknown query parameter "${key}"`);
+  }
+  return integer(query.from, "from", 0) ?? 0;
+}
+
 /** `status=queued,running` or `status=queued&status=running`. */
 function parseStatuses(value: unknown): JobStatus[] | undefined {
   if (value === undefined) return undefined;

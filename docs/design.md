@@ -344,9 +344,10 @@ docs/
 test/          node:test
 ```
 
-Framework: NestJS para la API (aprobado). `ws` solo si el adaptador de WebSocket de Nest no basta. La web
-(React/Vite, como la del orquestador) **está pendiente de aprobación** como dependencia; hasta entonces STA-34 no la
-empieza.
+Framework: NestJS para la API (aprobado). `ws` (STA-31, `.../stream`) va adjunto directo al `http.Server` de Nest,
+no por el módulo de WebSocket de Nest (`@nestjs/websockets`/`@nestjs/platform-ws` serían dependencias nuevas sin
+aprobar). La web (React/Vite, como la del orquestador) **está pendiente de aprobación** como dependencia; hasta
+entonces STA-34 no la empieza.
 
 Regla de dependencias: `adapters -> core`, `api -> core`, `db -> core`; `core` solo depende de sus propias interfaces.
 
@@ -387,6 +388,14 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 | `retry` nunca vuelve a pinnear: reusa el `sha` del job original directamente, sin pasar por `refs.pin(ref)` | "Mismo commit" significa el mismo commit, no el commit actual de esa rama; `RefPinner.pin` solo resuelve por nombre de rama, así que un retry no puede (ni debe) usarlo |
 | `retry` no vuelve a pasar por `isBranchAllowed`, `validateRequest` ni la lista de `kinds` del adaptador: reusa los campos del job original tal cual | Coherente con "mismo exacto" (proyecto/rama/kind/escenario/parámetros); si la política de un proyecto se endurece después, un retry de un job viejo sigue aceptándose con sus parámetros de entonces — consciente, no un descuido |
 | `JobService.retry` no repite el chequeo `isTerminal` que ya hace `assertRetryable` dentro de `JobStore.create` | Eran exactamente el mismo chequeo con el mismo error; mantenerlo en `JobService` además sufría un TOCTOU (leía el estado antes de la transacción de `create`, podía rechazar un retry que para el momento de escribir ya era válido). Una sola fuente de verdad, más permisiva-correcta |
+| `ws` (no `@nestjs/websockets`/`@nestjs/platform-ws`) adjuntado directo al `http.Server` de Nest, fuera de su pipeline de peticiones | `ws` ya estaba aprobado; el paquete de WebSocket de Nest sería una dependencia nueva sin aprobar. El handshake de WS no puede llevar `Authorization`, así que de todas formas necesitaba su propio control de acceso (el ticket), no el `ApiKeyGuard` |
+| Ticket de un solo uso para `.../stream` en memoria (`StreamTickets`), nunca en SQLite | Vive segundos (`DEFAULT_TICKET_TTL_MS` = 30s); un restart del servicio invalidando tickets abiertos es inofensivo, igual que las API keys. `issue()` barre los vencidos sin consumir, para no crecer sin límite si un cliente pide un ticket y nunca conecta |
+| `GET /v1/jobs/:id/log` sigue detrás del `ApiKeyGuard` normal (Bearer), no de un ticket | Un `fetch`/XHR sí puede llevar cabeceras; solo el handshake de WebSocket no puede. El "token por corrida, de solo lectura" que promete la sección 6 para un enlace abierto sin cabeceras (p. ej. pegado en la barra del navegador) no se implementó: no lo pidió este ticket |
+| La cola de replay + en vivo de `.../stream` hace *polling* del archivo (`JobLogReader.read`) cada `pollMs` (300ms por defecto), no `fs.watch` | Simple y predecible entre Linux y macOS (los únicos dos donde se despliega); `fs.watch` es notoriamente inconsistente entre sistemas de archivos. El costo es hasta 300ms de retraso en lo "en vivo", aceptable para logs de diagnóstico |
+| `FileJobLog.read` no está protegido por ningún lock de escritura: puede en teoría leer un `append` a medio escribir | `fs.appendFileSync` escribe de un solo `write()` casi siempre; el riesgo de partir una escritura es mínimo y el costo de un lock de lectura/escritura alrededor de cada línea de log no se justifica para un flujo de diagnóstico, no de datos críticos |
+| Cada conexión de `.../stream` registra `ws.on("error", ...)` | Un frame malformado del cliente hace que `ws` emita `'error'`; sin ningún listener, Node lo trata como excepción no capturada y tumba **todo el proceso** (todos los jobs, no solo esa conexión). Encontrado por el agente de review, confirmado con una prueba real (socket crudo que manda un frame sin máscara) |
+| Ping/pong cada `pingMs` (30s por defecto) en `.../stream`, con `ws.terminate()` si no hay `pong` a tiempo | Un cliente que desaparece sin cerrar la conexión TCP (red caída, laptop suspendida) quedaba "abierto" y en *polling* hasta que el job terminara, por minutos; el keepalive lo libera mucho antes |
+| El cierre limpio de `.../stream` en el apagado usa el hook `beforeApplicationShutdown` de Nest (`src/lifecycle/log-stream-shutdown.ts`), no un envoltorio de `app.close` ni el evento `"close"` del `http.Server` | Nest envuelve cada método público de la app (incluido `close`) en un proxy que vuelve a resolver el método por nombre en cada llamada; capturar "el close original" con `app.close.bind(app)` y llamarlo desde un reemplazo entra en recursión infinita. El evento `"close"` del `http.Server` tampoco sirve: el propio `close()` de Express ya destruyó a la fuerza los sockets (los WS incluidos) antes de que ese evento dispare. `beforeApplicationShutdown` es el único punto que Nest corre antes de eso |
 
 ## 12. Preguntas abiertas
 
