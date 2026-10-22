@@ -69,6 +69,12 @@ describe("validateDetoxRequest", () => {
     refuses("build", "all", JSON.parse('{"__proto__":{"x":1}}'), /unknown param/);
     refuses("run", "x", JSON.parse('{"constructor":1}'), /takes no params/);
   });
+
+  it("rejects a prototype key inside branches too, and never pollutes Object.prototype", () => {
+    refuses("build", "login", JSON.parse('{"branches":{"__proto__":{"x":1}}}'), /not a valid app name/);
+    assert.deepEqual(check("build", "login", JSON.parse('{"branches":{"constructor":"main"}}')), { branches: { constructor: "main" } });
+    assert.equal(({} as Record<string, unknown>).x, undefined, "Object.prototype must stay clean");
+  });
 });
 
 describe("planDetoxPhases", () => {

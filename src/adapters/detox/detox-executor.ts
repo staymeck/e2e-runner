@@ -5,7 +5,7 @@ import type { JobLog } from "../../core/job-log";
 import type { ProcessHost, RunningProcess } from "../../core/process-host";
 import type { BakeContainers } from "./bake-containers";
 import type { CatalogWorkspaces, Workspace } from "./catalog-workspaces";
-import { detoxCliArgs, namesAScenario, planDetoxPhases } from "./detox-request";
+import { JOB_APK_PLAN_DIR, detoxCliArgs, namesAScenario, planDetoxPhases } from "./detox-request";
 import { deriveOutcome, findRunReport, readRunSummary } from "./run-report";
 import { orchestratorBin, orchestratorPackageRoot, type ScenarioLister } from "./scenario-lister";
 
@@ -99,6 +99,10 @@ export class DetoxExecutor implements RunExecutor {
         PERFECT_QA_ORIGINAL_DIR: workspace.dir,
         ORCH_CATALOG_ROOT: workspace.dir,
         ORCH_PACKAGE_ROOT: orchestratorPackageRoot(workspace.dir),
+        // The run phase reads the APK plan from here too, not just the build phase that writes it
+        // (via --out, in detox-request.ts's buildFlags) — both must agree, or a job's own build is
+        // invisible to its own run. Set for every phase so neither can forget it.
+        ORCH_APK_PRODUCTION_DIR: JOB_APK_PLAN_DIR,
         PERFECT_QA_JOB_ID: job.id,
         PERFECT_QA_JOB_PHASE: phase.name,
       },

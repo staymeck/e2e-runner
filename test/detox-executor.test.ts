@@ -152,6 +152,15 @@ describe("DetoxExecutor.run", () => {
     assert.match(log.text, /args=\["generate-apk-production","--out","e2e-runner-apk-plan"\]/);
   });
 
+  it("sets ORCH_APK_PRODUCTION_DIR for both the build phase and the scenario (run) phase, not just one", async () => {
+    const { executor, log } = rig({ FAKE_OLD: "1" });
+    const pipeline = job({ kind: "pipeline", target: "all", params: {} });
+    await executor.run(phase(pipeline, "build", 0), context().ctx);
+    await executor.run(phase(pipeline, "scenario", 1), context().ctx);
+    const occurrences = log.text.match(/apk-production-dir=e2e-runner-apk-plan/g) ?? [];
+    assert.equal(occurrences.length, 2, "both the build phase and the run phase must read/write the same job-scoped plan folder, never the catalog's real apk-production/");
+  });
+
   it("prepares the catalog once per job, not once per phase", async () => {
     const { executor, catalog } = rig();
     const pipeline = job({ kind: "pipeline", target: "all", params: {} });
