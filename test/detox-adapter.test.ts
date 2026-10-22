@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { DeviceStatus } from "../src/core/adapter";
 import type { Job } from "../src/core/job";
 import { CatalogError, type CatalogWorkspaces } from "../src/adapters/detox/catalog-workspaces";
-import type { DeviceLister } from "../src/adapters/detox/device-checker";
+import { DeviceListingError, DevicesUnsupportedError, type DeviceLister } from "../src/adapters/detox/device-checker";
 import { createDetoxAdapter, DETOX_LOCKS, DETOX_PROJECT_ID } from "../src/adapters/detox/detox-adapter";
 import { ScenarioListingError, ScenariosUnsupportedError, type ScenarioInfo, type ScenarioLister } from "../src/adapters/detox/scenario-lister";
 import { CatalogReadError, InvalidJobRequestError } from "../src/core/job-request";
@@ -23,6 +24,15 @@ class FakeDeviceLister implements DeviceLister {
   constructor(private readonly connected: number) {}
   async list() {
     return Array.from({ length: this.connected }, (_, i) => ({ name: `device_${i}`, state: "connected" as const }));
+  }
+}
+
+/** Unlike FakeDeviceLister, lets a test name each device's own state — to prove the "connected" filter
+ * in canStart actually filters, not just counts whatever the lister returns. */
+class MixedDeviceLister implements DeviceLister {
+  constructor(private readonly devices: readonly DeviceStatus[]) {}
+  async list() {
+    return this.devices;
   }
 }
 
@@ -209,6 +219,28 @@ describe("createDetoxAdapter: devices and canStart (STA-46)", () => {
     ]);
   });
 
+  it("turns an old branch (no `devices` command) into CatalogReadError, same as targets() does for `scenarios`", async () => {
+    const catalog = new FakeCatalog("/x");
+    const tooOld: DeviceLister = {
+      list: async () => {
+        throw new DevicesUnsupportedError();
+      },
+    };
+    const a = adapter(catalog, new FakeLister(), tooOld);
+    await assert.rejects(a.devices!.list(), CatalogReadError);
+  });
+
+  it("turns a malformed or contract-version-mismatched listing into CatalogReadError too, not a bare 500", async () => {
+    const catalog = new FakeCatalog("/x");
+    const broken: DeviceLister = {
+      list: async () => {
+        throw new DeviceListingError("Unsupported devices contract version: 2 (this service reads 1)");
+      },
+    };
+    const a = adapter(catalog, new FakeLister(), broken);
+    await assert.rejects(a.devices!.list(), CatalogReadError);
+  });
+
   it("is always ready for a build of everything or a pipeline: no single scenario's device count applies", async () => {
     const catalog = new FakeCatalog("/x");
     const a = adapter(catalog, new FakeLister(), new FakeDeviceLister(0));
@@ -228,6 +260,22 @@ describe("createDetoxAdapter: devices and canStart (STA-46)", () => {
     const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
     const lister = new FakeLister({ "/x": [scenario("login", { kind: "step", apps: ["kpmake", "kpfry"] })] });
     const a = adapter(catalog, lister, new FakeDeviceLister(1));
+    await a.browsable!.browse("main");
+    const readiness = await a.canStart!(fakeJob({ target: "login" }));
+    assert.equal(readiness.ready, false);
+    assert.match(!readiness.ready ? readiness.reason : "", /1 de 2/);
+  });
+
+  it("counts only devices actually in the \"connected\" state, not every device the lister lists", async () => {
+    // Three devices listed, but only one is genuinely usable — must not be mistaken for three connected.
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const lister = new FakeLister({ "/x": [scenario("login", { kind: "step", apps: ["kpmake", "kpfry"] })] });
+    const devices = new MixedDeviceLister([
+      { name: "device_a", state: "connected" },
+      { name: "device_b", state: "disconnected" },
+      { name: "device_c", state: "unauthorized" },
+    ]);
+    const a = adapter(catalog, lister, devices);
     await a.browsable!.browse("main");
     const readiness = await a.canStart!(fakeJob({ target: "login" }));
     assert.equal(readiness.ready, false);

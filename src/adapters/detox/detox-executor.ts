@@ -21,7 +21,8 @@ export interface DetoxExecutorDeps {
   /**
    * Not read by the executor itself — only by `createDetoxAdapter`, for `devices`/`canStart` (STA-46).
    * Optional: a test/fixture that does not care about device status does not need to stub it; omitting
-   * it just means `canStart` always answers ready and `devices.list()` always answers empty.
+   * it means the resulting adapter has no `devices`/`canStart` at all (not a default that silently
+   * reports "zero devices" — that was tried and reverted, see `createDetoxAdapter`'s own comment).
    */
   readonly deviceLister?: DeviceLister;
   readonly containers: BakeContainers;

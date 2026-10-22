@@ -2,7 +2,7 @@ import type { CatalogTarget, DeviceChecker, DeviceStatus, JobRequestInput, Proje
 import type { Job } from "../../core/job";
 import { CatalogReadError, InvalidJobRequestError } from "../../core/job-request";
 import { CatalogError, type CatalogWorkspaces, type Workspace } from "./catalog-workspaces";
-import type { DeviceLister } from "./device-checker";
+import { DeviceListingError, DevicesUnsupportedError, type DeviceLister } from "./device-checker";
 import { DETOX_KINDS, namesAScenario, validateDetoxRequest } from "./detox-request";
 import { DetoxExecutor, type DetoxExecutorDeps } from "./detox-executor";
 import { ScenarioListingError, ScenariosUnsupportedError, type ScenarioInfo, type ScenarioLister } from "./scenario-lister";
@@ -57,7 +57,16 @@ function browsableCatalog(catalog: CatalogWorkspaces, lister: ScenarioLister): P
  * exactly that kind of read (STA-46). */
 function devicesChecker(catalog: CatalogWorkspaces, deviceLister: DeviceLister): DeviceChecker {
   return {
-    list: () => catalog.withBrowseLock((dir) => deviceLister.list(dir)),
+    async list(): Promise<readonly DeviceStatus[]> {
+      try {
+        return await catalog.withBrowseLock((dir) => deviceLister.list(dir));
+      } catch (error) {
+        // Same treatment as targets(): a branch too old for `devices`, or a contract-version mismatch
+        // with a stale catalog, is an expected 422 for the client, never a bare 500.
+        if (error instanceof DevicesUnsupportedError || error instanceof DeviceListingError) throw new CatalogReadError(error.message);
+        throw error;
+      }
+    },
   };
 }
 

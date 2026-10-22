@@ -18,7 +18,17 @@ export interface SchedulerOptions {
    * re-check (only new submissions and other jobs finishing call `kick()`).
    */
   readonly recheckIntervalMs?: number;
+  /**
+   * Longest an adapter's `canStart` may take before it is treated the same as a throw: ready, logged,
+   * and moved on from. `canStart` can share a lock with other catalog operations (`fetch`/`browse`,
+   * Detox's own `withBrowseLock`) that has no timeout of its own, so a stuck one of those would
+   * otherwise hang every future `canStart` queued behind the same lock forever — worse than before
+   * this gate existed, since the job would not even get the chance to start-then-fail visibly.
+   */
+  readonly canStartTimeoutMs?: number;
 }
+
+export const DEFAULT_CAN_START_TIMEOUT_MS = 5_000;
 
 /** What the scheduler holds about a job that is running right now. */
 interface LiveRun {
@@ -46,6 +56,7 @@ export class JobScheduler implements QueueListener {
   private readonly warnedProjects = new Set<string>();
   private readonly cancelGraceMs: number;
   private readonly phaseTimeoutMs: number | undefined;
+  private readonly canStartTimeoutMs: number;
   /** Why a queued job's own `canStart` check last said it was not ready; cleared the moment it is. */
   private readonly waitingReasons = new Map<string, string>();
   private readonly recheckTimer: NodeJS.Timeout | undefined;
@@ -59,6 +70,7 @@ export class JobScheduler implements QueueListener {
   ) {
     this.cancelGraceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
     this.phaseTimeoutMs = options.phaseTimeoutMs;
+    this.canStartTimeoutMs = options.canStartTimeoutMs ?? DEFAULT_CAN_START_TIMEOUT_MS;
     if (options.recheckIntervalMs) {
       this.recheckTimer = setInterval(() => this.kick(), options.recheckIntervalMs);
       this.recheckTimer.unref();
@@ -175,11 +187,16 @@ export class JobScheduler implements QueueListener {
       }
       if (adapter.canStart) {
         const readiness = await this.safelyCheck(adapter, job);
-        if (!readiness.ready) {
+        // Only record a reason if the job is still actually queued: `canStart` awaited a real check,
+        // during which an overlapping pass (another kick(), e.g. the recheck timer) could already have
+        // claimed and started — or even finished — this same job. Writing a stale reason over that would
+        // leave `waitingReasonFor` permanently wrong for a job that is no longer waiting on anything.
+        if (!readiness.ready && this.store.get(job.id)?.status === "queued") {
           this.waitingReasons.set(job.id, readiness.reason);
           job.locks.forEach((resource) => waitingFor.add(resource));
           continue;
         }
+        if (!readiness.ready) continue; // not queued any more: nothing to wait for, nothing to lock behind
       }
       this.waitingReasons.delete(job.id);
       let running: Job | undefined;
@@ -374,11 +391,24 @@ export class JobScheduler implements QueueListener {
    * that actually running the job already does on its own. Fails open.
    */
   private async safelyCheck(adapter: ProjectAdapter, job: Job): Promise<Readiness> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<Readiness>((resolve) => {
+      timer = setTimeout(() => {
+        this.diagnostics.warn({ job: job.id, timeoutMs: this.canStartTimeoutMs }, "canStart took too long to answer; starting the job anyway");
+        resolve({ ready: true });
+      }, this.canStartTimeoutMs);
+      timer.unref();
+    });
     try {
-      return await adapter.canStart!(job);
+      // The real check keeps running even after the race is decided by the timeout (nothing here can
+      // cancel it, e.g. a shared lock with no timeout of its own) — harmless: by the time it resolves,
+      // nothing is still awaiting it, so a late `{ ready: false }` has nowhere to be (wrongly) recorded.
+      return await Promise.race([adapter.canStart!(job), timeout]);
     } catch (error) {
       this.diagnostics.warn({ job: job.id, error: describeError(error) }, "could not check whether the job's resources are ready; starting it anyway");
       return { ready: true };
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
