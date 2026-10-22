@@ -5,6 +5,7 @@ import type { JobLog } from "../../core/job-log";
 import type { ProcessHost, RunningProcess } from "../../core/process-host";
 import type { BakeContainers } from "./bake-containers";
 import type { CatalogWorkspaces, Workspace } from "./catalog-workspaces";
+import type { DeviceLister } from "./device-checker";
 import { JOB_APK_PLAN_DIR, detoxCliArgs, namesAScenario, planDetoxPhases } from "./detox-request";
 import { deriveOutcome, findRunReport, readRunSummary } from "./run-report";
 import { orchestratorBin, orchestratorPackageRoot, type ScenarioLister } from "./scenario-lister";
@@ -17,6 +18,12 @@ export interface DetoxExecutorDeps {
   readonly catalog: CatalogWorkspaces;
   readonly host: ProcessHost;
   readonly lister: ScenarioLister;
+  /**
+   * Not read by the executor itself — only by `createDetoxAdapter`, for `devices`/`canStart` (STA-46).
+   * Optional: a test/fixture that does not care about device status does not need to stub it; omitting
+   * it just means `canStart` always answers ready and `devices.list()` always answers empty.
+   */
+  readonly deviceLister?: DeviceLister;
   readonly containers: BakeContainers;
   readonly log: JobLog;
   /** The environment `perfect-qa` runs in (the service's, minus its own settings). Read at each start. */

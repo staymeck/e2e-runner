@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { Job } from "../src/core/job";
 import { CatalogError, type CatalogWorkspaces } from "../src/adapters/detox/catalog-workspaces";
+import type { DeviceLister } from "../src/adapters/detox/device-checker";
 import { createDetoxAdapter, DETOX_LOCKS, DETOX_PROJECT_ID } from "../src/adapters/detox/detox-adapter";
 import { ScenarioListingError, ScenariosUnsupportedError, type ScenarioInfo, type ScenarioLister } from "../src/adapters/detox/scenario-lister";
 import { CatalogReadError, InvalidJobRequestError } from "../src/core/job-request";
 import { FakeCatalog } from "./helpers/fake-orchestrator";
 
-const scenario = (id: string, title: string | null = null): ScenarioInfo => ({ id, kind: "step", title, description: null, apps: [], appRefs: [] });
+const scenario = (id: string, overrides: Partial<ScenarioInfo> = {}): ScenarioInfo => ({ id, kind: "step", title: null, description: null, apps: [], appRefs: [], ...overrides });
 
 class FakeLister implements ScenarioLister {
   readonly listedDirs: string[] = [];
@@ -17,11 +19,46 @@ class FakeLister implements ScenarioLister {
   }
 }
 
-function adapter(catalog: CatalogWorkspaces, lister: ScenarioLister) {
+class FakeDeviceLister implements DeviceLister {
+  constructor(private readonly connected: number) {}
+  async list() {
+    return Array.from({ length: this.connected }, (_, i) => ({ name: `device_${i}`, state: "connected" as const }));
+  }
+}
+
+function fakeJob(overrides: Partial<Job> = {}): Job {
+  return {
+    seq: 1,
+    id: "job-1",
+    project: "detox",
+    kind: "run",
+    status: "queued",
+    ref: "main",
+    sha: "a".repeat(40),
+    target: "login",
+    params: {},
+    locks: ["devices"],
+    retryOf: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    startedAt: null,
+    finishedAt: null,
+    cancelRequestedAt: null,
+    outcome: null,
+    error: null,
+    pid: null,
+    logPath: null,
+    reportPath: null,
+    phases: [],
+    ...overrides,
+  };
+}
+
+function adapter(catalog: CatalogWorkspaces, lister: ScenarioLister, deviceLister?: DeviceLister) {
   return createDetoxAdapter({
     catalog,
     host: { start: () => { throw new Error("not used"); }, kill: () => undefined, commandLine: async () => undefined },
     lister,
+    ...(deviceLister ? { deviceLister } : {}),
     containers: { stopForJob: async () => [] },
     log: { append: () => undefined },
     environment: () => ({}),
@@ -60,7 +97,7 @@ describe("createDetoxAdapter.browsable", () => {
 
   it("lists the targets of whatever browse last positioned the catalog at, trimmed to id and title", async () => {
     const catalog = new FakeCatalog("/x", { main: "a".repeat(40), iteration_1: "b".repeat(40) });
-    const lister = new FakeLister({ "/x": [scenario("login", "Login"), scenario("checkout")] });
+    const lister = new FakeLister({ "/x": [scenario("login", { title: "Login" }), scenario("checkout")] });
     const a = adapter(catalog, lister);
 
     await a.browsable!.browse("main");
@@ -153,5 +190,72 @@ describe("createDetoxAdapter.browsable", () => {
     const a = adapter(catalog, noDeps);
     await a.browsable!.browse("main");
     await assert.rejects(a.browsable!.targets(), CatalogReadError);
+  });
+});
+
+describe("createDetoxAdapter: devices and canStart (STA-46)", () => {
+  it("has neither devices nor canStart when no deviceLister was given — opting out of the gate entirely", () => {
+    const a = adapter(new FakeCatalog("/x"), new FakeLister());
+    assert.equal(a.devices, undefined);
+    assert.equal(a.canStart, undefined);
+  });
+
+  it("devices.list() reads whatever the device lister reports for the browsing folder", async () => {
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const a = adapter(catalog, new FakeLister(), new FakeDeviceLister(2));
+    assert.deepEqual(await a.devices!.list(), [
+      { name: "device_0", state: "connected" },
+      { name: "device_1", state: "connected" },
+    ]);
+  });
+
+  it("is always ready for a build of everything or a pipeline: no single scenario's device count applies", async () => {
+    const catalog = new FakeCatalog("/x");
+    const a = adapter(catalog, new FakeLister(), new FakeDeviceLister(0));
+    assert.deepEqual(await a.canStart!(fakeJob({ kind: "build", target: "all" })), { ready: true });
+    assert.deepEqual(await a.canStart!(fakeJob({ kind: "pipeline", target: "all" })), { ready: true });
+  });
+
+  it("is ready when a step scenario's own app count is met by connected devices", async () => {
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const lister = new FakeLister({ "/x": [scenario("login", { kind: "step", apps: ["kpmake", "kpfry"] })] });
+    const a = adapter(catalog, lister, new FakeDeviceLister(2));
+    await a.browsable!.browse("main");
+    assert.deepEqual(await a.canStart!(fakeJob({ target: "login" })), { ready: true });
+  });
+
+  it("is not ready, with a visible reason, when fewer devices are connected than a step scenario needs", async () => {
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const lister = new FakeLister({ "/x": [scenario("login", { kind: "step", apps: ["kpmake", "kpfry"] })] });
+    const a = adapter(catalog, lister, new FakeDeviceLister(1));
+    await a.browsable!.browse("main");
+    const readiness = await a.canStart!(fakeJob({ target: "login" }));
+    assert.equal(readiness.ready, false);
+    assert.match(!readiness.ready ? readiness.reason : "", /1 de 2/);
+  });
+
+  it("a batch scenario always needs exactly one device slot, however many apps it has", async () => {
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const lister = new FakeLister({ "/x": [scenario("nightly", { kind: "batch", apps: ["kpmake", "kpfry", "kppack"] })] });
+    const a = adapter(catalog, lister, new FakeDeviceLister(1));
+    await a.browsable!.browse("main");
+    assert.deepEqual(await a.canStart!(fakeJob({ target: "nightly" })), { ready: true });
+  });
+
+  it("a step scenario always needs at least one device slot, even with zero apps listed", async () => {
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const lister = new FakeLister({ "/x": [scenario("edge-case", { kind: "step", apps: [] })] });
+    const a = adapter(catalog, lister, new FakeDeviceLister(0));
+    await a.browsable!.browse("main");
+    const readiness = await a.canStart!(fakeJob({ target: "edge-case" }));
+    assert.equal(readiness.ready, false);
+    assert.match(!readiness.ready ? readiness.reason : "", /0 de 1/);
+  });
+
+  it("is ready when the job's target is not a scenario the browsing folder currently lists (unknown here, not a reason to block)", async () => {
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const a = adapter(catalog, new FakeLister({ "/x": [] }), new FakeDeviceLister(0));
+    await a.browsable!.browse("main");
+    assert.deepEqual(await a.canStart!(fakeJob({ target: "ghost" })), { ready: true });
   });
 });

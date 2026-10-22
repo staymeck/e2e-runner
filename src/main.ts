@@ -4,6 +4,7 @@ import { createDetoxCatalog } from "./adapters/detox/create-catalog";
 import { DETOX_ADAPTER } from "./adapters/detox/detox-config";
 import { createDetoxAdapter } from "./adapters/detox/detox-adapter";
 import { NpmInstaller } from "./adapters/detox/dependency-installer";
+import { CliDeviceChecker } from "./adapters/detox/device-checker";
 import { CliScenarioLister } from "./adapters/detox/scenario-lister";
 import { createApp } from "./app";
 import { loadConfig } from "./config/load-config";
@@ -23,6 +24,7 @@ import { PinoNestLogger, createLogger } from "./logging/logger";
 const JOB_LOGS_SUBDIR = "logs";
 
 const SHUTDOWN_DRAIN_MS = 10_000;
+const DEVICE_RECHECK_INTERVAL_MS = 15_000;
 
 async function main(): Promise<void> {
   const logger = createLogger();
@@ -45,6 +47,7 @@ async function main(): Promise<void> {
           catalog,
           host: new NodeProcessHost(runner),
           lister: new CliScenarioLister(runner, childEnvironment, process.execPath, SERVICE_SECRET_NAMES),
+          deviceLister: new CliDeviceChecker(runner, childEnvironment, process.execPath, SERVICE_SECRET_NAMES),
           containers: new DockerBakeContainers(runner, logger),
           log: jobLog,
           environment: childEnvironment,
@@ -54,7 +57,9 @@ async function main(): Promise<void> {
       ),
     );
   }
-  const scheduler = new JobScheduler(store, adapters, logger);
+  // Nothing else wakes the scheduler for a job that canStart is blocking only on device connectivity
+  // (no submission, no other job finishing) — this is what notices a device reconnecting on its own.
+  const scheduler = new JobScheduler(store, adapters, logger, { recheckIntervalMs: DEVICE_RECHECK_INTERVAL_MS });
   await scheduler.reconcile();
 
   const jobs = new JobService(config.projects, adapters, new JobEnqueuer(store, adapters, scheduler), scheduler, store);
