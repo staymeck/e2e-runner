@@ -1,4 +1,4 @@
-import type { AdapterLookup, PhaseResult, ProjectAdapter, RunContext, RunExecutor } from "./adapter";
+import type { AdapterLookup, PhaseResult, ProjectAdapter, Readiness, RunContext, RunExecutor } from "./adapter";
 import { silentDiagnostics, type Diagnostics } from "./diagnostics";
 import { JobAlreadyFinishedError, JobNotFoundError, isTerminal, type Job, type JobPhase } from "./job";
 import type { JobStore } from "./job-store";
@@ -11,6 +11,13 @@ export interface SchedulerOptions {
   readonly phaseTimeoutMs?: number;
   /** How long a stopping phase gets to end before the scheduler abandons it and cleans up. */
   readonly cancelGraceMs?: number;
+  /**
+   * How often to re-check queued jobs an adapter's `canStart` is blocking (e.g. on a device that is not
+   * connected yet) — nothing else wakes the scheduler up for them, since their own resource lock never
+   * changes and no other job's completion frees anything they are waiting on. Unset: no periodic
+   * re-check (only new submissions and other jobs finishing call `kick()`).
+   */
+  readonly recheckIntervalMs?: number;
 }
 
 /** What the scheduler holds about a job that is running right now. */
@@ -39,6 +46,9 @@ export class JobScheduler implements QueueListener {
   private readonly warnedProjects = new Set<string>();
   private readonly cancelGraceMs: number;
   private readonly phaseTimeoutMs: number | undefined;
+  /** Why a queued job's own `canStart` check last said it was not ready; cleared the moment it is. */
+  private readonly waitingReasons = new Map<string, string>();
+  private readonly recheckTimer: NodeJS.Timeout | undefined;
   private stopped = false;
 
   constructor(
@@ -49,21 +59,38 @@ export class JobScheduler implements QueueListener {
   ) {
     this.cancelGraceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
     this.phaseTimeoutMs = options.phaseTimeoutMs;
+    if (options.recheckIntervalMs) {
+      this.recheckTimer = setInterval(() => this.kick(), options.recheckIntervalMs);
+      this.recheckTimer.unref();
+    }
   }
 
-  /** Starts every queued job that can start now. Never throws: a problem with one job cannot stop the others. */
+  /** The reason a queued job is not starting beyond "something else is using its resource", if any. */
+  waitingReasonFor(jobId: string): string | undefined {
+    return this.waitingReasons.get(jobId);
+  }
+
+  /**
+   * Starts every queued job that can start now. Never throws: a problem with one job cannot stop the
+   * others. `startWhatFits` is async (an adapter's `canStart` may do real I/O) but its body still runs
+   * synchronously up to its first real `await` — which, for every job whose adapter has no `canStart`
+   * (everything before this session, and still most jobs after it), is never reached at all, so claiming
+   * and starting such a job happens before `kick()` returns, exactly as before. Two overlapping passes
+   * (a slow `canStart` straddling another `kick()`) are safe without any extra guard: `JobStore.claim`
+   * is its own SQLite transaction, so either pass's claim on a given job simply loses the race and backs
+   * off, the same way two passes already could race today on an ordinary lock.
+   */
   kick(): void {
     if (this.stopped) return;
-    try {
-      this.startWhatFits();
-    } catch (error) {
+    this.startWhatFits().catch((error: unknown) => {
       this.diagnostics.error({ error: describeError(error) }, "could not read the queue");
-    }
+    });
   }
 
   /** Stops starting jobs. Jobs already running are left alone; see `shutdown` to stop them too. */
   stop(): void {
     this.stopped = true;
+    clearInterval(this.recheckTimer);
   }
 
   /** Resolves when every job started so far has reached a final status. */
@@ -122,6 +149,7 @@ export class JobScheduler implements QueueListener {
 
     if (job.status === "queued") {
       const cancelled = this.store.transition(id, "cancelled");
+      this.waitingReasons.delete(id);
       this.kick(); // jobs queued behind this one may have been waiting only for it
       return cancelled;
     }
@@ -132,7 +160,7 @@ export class JobScheduler implements QueueListener {
 
   // -- starting --
 
-  private startWhatFits(): void {
+  private async startWhatFits(): Promise<void> {
     const waitingFor = new Set<string>();
     for (const job of this.store.listByStatus("queued")) {
       const adapter = this.adapters.find(job.project);
@@ -145,6 +173,15 @@ export class JobScheduler implements QueueListener {
         job.locks.forEach((resource) => waitingFor.add(resource));
         continue;
       }
+      if (adapter.canStart) {
+        const readiness = await this.safelyCheck(adapter, job);
+        if (!readiness.ready) {
+          this.waitingReasons.set(job.id, readiness.reason);
+          job.locks.forEach((resource) => waitingFor.add(resource));
+          continue;
+        }
+      }
+      this.waitingReasons.delete(job.id);
       let running: Job | undefined;
       try {
         running = this.store.claim(job.id);
@@ -319,6 +356,7 @@ export class JobScheduler implements QueueListener {
   }
 
   private failQueued(job: Job, error: string): void {
+    this.waitingReasons.delete(job.id);
     this.safely(job.id, "fail a queued job", () => this.store.transition(job.id, "failed", { error }));
   }
 
@@ -327,6 +365,20 @@ export class JobScheduler implements QueueListener {
       action();
     } catch (error) {
       this.diagnostics.warn({ job: id, error: describeError(error) }, `could not ${what}`);
+    }
+  }
+
+  /**
+   * An adapter's `canStart` failing is never a reason to leave a job queued forever: the gate is an
+   * optimization (do not even attempt a job that is obviously missing a resource), not the safety check
+   * that actually running the job already does on its own. Fails open.
+   */
+  private async safelyCheck(adapter: ProjectAdapter, job: Job): Promise<Readiness> {
+    try {
+      return await adapter.canStart!(job);
+    } catch (error) {
+      this.diagnostics.warn({ job: job.id, error: describeError(error) }, "could not check whether the job's resources are ready; starting it anyway");
+      return { ready: true };
     }
   }
 }

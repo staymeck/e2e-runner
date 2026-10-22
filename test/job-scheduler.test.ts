@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { beforeEach, describe, it } from "node:test";
-import { AdapterRegistry, UnknownProjectError } from "../src/core/adapter";
+import { AdapterRegistry, UnknownProjectError, type Readiness } from "../src/core/adapter";
 import { JobAlreadyFinishedError, JobNotFoundError, type Job } from "../src/core/job";
 import { JobEnqueuer, type EnqueueRequest } from "../src/core/job-enqueuer";
 import { JobScheduler } from "../src/core/job-scheduler";
@@ -206,6 +206,81 @@ describe("resources and order", () => {
   });
 });
 
+describe("canStart (readiness beyond a free lock)", () => {
+  it("leaves a job queued, with a visible reason, when the adapter says it is not ready yet", async () => {
+    const detox = { ...fakeAdapter("detox", ["devices"]), canStart: async () => ({ ready: false, reason: "esperando dispositivo X" }) };
+    const r = rig(openMemoryDatabase(), detox);
+    const job = r.enqueuer.enqueue(request("detox"));
+    await settle(); // canStart is async even when it resolves right away: the check itself takes a tick
+    assert.equal(statusOf(r, job), "queued");
+    assert.equal(r.scheduler.waitingReasonFor(job.id), "esperando dispositivo X");
+  });
+
+  it("starts the job, and clears its reason, once canStart later says it is ready", async () => {
+    let ready = false;
+    const canStart = async (): Promise<Readiness> => (ready ? { ready: true } : { ready: false, reason: "esperando dispositivo X" });
+    const detox = { ...fakeAdapter("detox", ["devices"]), canStart };
+    const r = rig(openMemoryDatabase(), detox);
+    const job = r.enqueuer.enqueue(request("detox"));
+    assert.equal(statusOf(r, job), "queued");
+
+    ready = true;
+    r.scheduler.kick();
+    await settle();
+    assert.equal(statusOf(r, job), "running");
+    assert.equal(r.scheduler.waitingReasonFor(job.id), undefined);
+    await detox.executor.finish(job.id, OK);
+  });
+
+  it("does not hold back a job whose own lock is free, just because another job's canStart failed", async () => {
+    const blocked = { ...fakeAdapter("blocked", ["devices"]), canStart: async () => ({ ready: false, reason: "no device" }) };
+    const web = fakeAdapter("web", ["cucumber"]);
+    const r = rig(openMemoryDatabase(), blocked, web);
+    r.enqueuer.enqueue(request("blocked"));
+    const w = r.enqueuer.enqueue(request("web"));
+    await settle();
+    assert.equal(statusOf(r, w), "running");
+    await web.executor.finish(w.id, OK);
+  });
+
+  it("fails open: a canStart that throws does not leave the job stuck", async () => {
+    const detox = {
+      ...fakeAdapter("detox", ["devices"]),
+      canStart: async () => {
+        throw new Error("boom");
+      },
+    };
+    const warnings: string[] = [];
+    const store = new SqliteJobStore(openMemoryDatabase());
+    const registry = new AdapterRegistry([detox]);
+    const scheduler = new JobScheduler(store, registry, { info: () => undefined, warn: (_f, m) => warnings.push(m), error: () => undefined });
+    const enqueuer = new JobEnqueuer(store, registry, scheduler);
+    const job = enqueuer.enqueue(request("detox"));
+    await settle();
+    assert.equal(store.get(job.id)?.status, "running");
+    assert.ok(warnings.some((m) => m.includes("could not check whether the job's resources are ready")));
+    await detox.executor.finish(job.id, OK);
+  });
+
+  it("recheckIntervalMs retries a job blocked only by canStart, with no other trigger", async () => {
+    let ready = false;
+    const canStart = async (): Promise<Readiness> => (ready ? { ready: true } : { ready: false, reason: "esperando dispositivo X" });
+    const detox = { ...fakeAdapter("detox", ["devices"]), canStart };
+    const store = new SqliteJobStore(openMemoryDatabase());
+    const registry = new AdapterRegistry([detox]);
+    const scheduler = new JobScheduler(store, registry, undefined, { recheckIntervalMs: 15 });
+    const enqueuer = new JobEnqueuer(store, registry, scheduler);
+    const job = enqueuer.enqueue(request("detox"));
+    assert.equal(store.get(job.id)?.status, "queued");
+
+    ready = true; // nothing tells the scheduler directly; only its own timer will notice
+    await sleep(60);
+    assert.equal(store.get(job.id)?.status, "running");
+    scheduler.stop();
+    await detox.executor.finish(job.id, OK);
+  });
+});
+
 describe("cancel", () => {
   let detox: ReturnType<typeof fakeAdapter>;
   let r: Rig;
@@ -323,7 +398,7 @@ describe("a job that cannot be started", () => {
     await detox.executor.finish(fine.id, OK);
   });
 
-  it("does not crash the caller when the queue cannot even be read", () => {
+  it("does not crash the caller when the queue cannot even be read", async () => {
     const detox = fakeAdapter("detox", ["devices"]);
     const store = new SqliteJobStore(openMemoryDatabase());
     store.listByStatus = () => {
@@ -331,7 +406,10 @@ describe("a job that cannot be started", () => {
     };
     const errors: string[] = [];
     const scheduler = new JobScheduler(store, new AdapterRegistry([detox]), { info: () => undefined, warn: () => undefined, error: (_f, m) => errors.push(m) });
+    // kick() never throws synchronously, but logging a *rejected* queue read (unlike every other error
+    // path here, which is synchronous) only happens once that promise settles, a tick later.
     assert.doesNotThrow(() => scheduler.kick());
+    await sleep(0);
     assert.deepEqual(errors, ["could not read the queue"]);
   });
 
