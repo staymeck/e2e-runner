@@ -100,6 +100,7 @@ export function JobsPage() {
                   <td className="mono">{job.sha.slice(0, 8)}</td>
                   <td>
                     <StatusBadge status={job.status} />
+                    {job.waitingReason && <div className="muted">{job.waitingReason}</div>}
                   </td>
                   <td>{job.phase ?? "—"}</td>
                   <td className="row-actions">

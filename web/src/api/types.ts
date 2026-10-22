@@ -38,6 +38,14 @@ export interface JobView {
   readonly error: string | null;
   readonly phase: string | null;
   readonly phases: readonly PhaseView[];
+  /** Beyond "something else is using its resource" — e.g. a job waiting on a disconnected device. */
+  readonly waitingReason: string | null;
+}
+
+/** Mirrors src/core/adapter.ts's `DeviceStatus`. */
+export interface DeviceStatus {
+  readonly name: string;
+  readonly state: "connected" | "disconnected" | "unauthorized";
 }
 
 export interface ProjectView {

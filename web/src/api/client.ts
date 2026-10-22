@@ -1,5 +1,5 @@
 import { getStoredSession } from "./session";
-import type { CatalogTarget, JobStatus, JobView, LoginResult, MeResult, ProjectView } from "./types";
+import type { CatalogTarget, DeviceStatus, JobStatus, JobView, LoginResult, MeResult, ProjectView } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -97,6 +97,7 @@ export const api = {
     refs: (id: string) => request<{ refs: string[] }>(`/v1/projects/${encodeURIComponent(id)}/refs`),
     browse: (id: string, ref: string) => request<{ ref: string; sha: string }>(`/v1/projects/${encodeURIComponent(id)}/browse`, { method: "POST", body: JSON.stringify({ ref }) }),
     targets: (id: string) => request<{ targets: CatalogTarget[] }>(`/v1/projects/${encodeURIComponent(id)}/targets`),
+    devices: (id: string) => request<{ devices: DeviceStatus[] }>(`/v1/projects/${encodeURIComponent(id)}/devices`),
   },
 
   jobs: {
