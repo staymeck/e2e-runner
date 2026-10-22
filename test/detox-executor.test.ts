@@ -149,7 +149,7 @@ describe("DetoxExecutor.run", () => {
     const { executor, log } = rig({ FAKE_OLD: "1" }); // listing would fail: it must not be asked
     const result = await executor.run(phase(job({ kind: "pipeline", target: "all", params: {} }), "build"), context().ctx);
     assert.equal(result.outcome, "success");
-    assert.match(log.text, /args=\["generate-apk-production"\]/);
+    assert.match(log.text, /args=\["generate-apk-production","--out","e2e-runner-apk-plan"\]/);
   });
 
   it("prepares the catalog once per job, not once per phase", async () => {
