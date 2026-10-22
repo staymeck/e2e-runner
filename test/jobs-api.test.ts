@@ -13,7 +13,7 @@ import { buildService } from "./helpers/service";
 import { scratchDir } from "./helpers/workspace";
 
 const KEY = "current-key-0123456789";
-const config: ServiceConfig = { server: { host: "127.0.0.1", port: 0 }, apiKeys: [KEY], dataDir: "/unused", projects: [], detox: undefined };
+const config: ServiceConfig = { server: { host: "127.0.0.1", port: 0 }, apiKeys: [KEY], webUsers: [], dataDir: "/unused", projects: [], detox: undefined };
 const logsRoot = scratchDir();
 let logsCounter = 0;
 

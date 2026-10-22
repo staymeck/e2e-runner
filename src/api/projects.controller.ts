@@ -1,4 +1,5 @@
 import { Body, Controller, Get, HttpCode, Inject, Param, Post } from "@nestjs/common";
+import { Roles } from "../auth/access-control";
 import type { CatalogTarget } from "../core/adapter";
 import { JOB_SERVICE, type JobService } from "../core/job-service";
 import { parseBrowse } from "./request-parsing";
@@ -9,6 +10,11 @@ interface ProjectView {
   readonly allowedBranches: readonly string[];
 }
 
+/**
+ * Scoped to `e2e-mobile` because Detox is the only project today; a request on the shared API key
+ * (the CLI, n8n) is unaffected — `@Roles` only restricts a web login session, never a service key.
+ */
+@Roles("e2e-mobile")
 @Controller("v1/projects")
 export class ProjectsController {
   constructor(@Inject(JOB_SERVICE) private readonly jobs: JobService) {}

@@ -3,9 +3,10 @@ import * as path from "node:path";
 import { DETOX_ADAPTER, loadDetoxConfig, type DetoxConfig } from "../adapters/detox/detox-config";
 import { isBranchAllowed, isValidBranchPattern } from "../core/branch-pattern";
 import { ConfigError, Problems } from "../core/problems";
-import type { ProjectConfig, ServiceConfig } from "./service-config";
+import type { ProjectConfig, ServiceConfig, WebRole, WebUserCredential } from "./service-config";
 
 export const MIN_API_KEY_LENGTH = 16;
+export const MIN_WEB_PASSWORD_LENGTH = 8;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8090;
 const PROJECT_ID = /^[a-z][a-z0-9-]{0,31}$/;
@@ -13,6 +14,8 @@ const PROJECT_KEYS: readonly string[] = ["adapter", "repo", "allowedBranches", "
 const KNOWN_ADAPTERS: readonly string[] = [DETOX_ADAPTER];
 /** Printable ASCII without spaces: what can travel in an `Authorization: Bearer` header. */
 const API_KEY_CHARS = /^[\x21-\x7E]+$/;
+const WEB_ROLES: readonly WebRole[] = ["e2e-mobile", "e2e-cypress", "admin"];
+const WEB_USERNAME = /^[A-Za-z][A-Za-z0-9_-]{1,31}$/;
 /** `ssh://`, `https://`, `file://` or the scp-like `user@host:path`; never an option or `ext::`. */
 const REPO_URL = /^(?:(?:ssh|https|file):\/\/\S+|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:\S+)$/;
 
@@ -40,6 +43,46 @@ function readApiKeys(env: NodeJS.ProcessEnv, problems: Problems): string[] {
     problems.add("E2E_SERVICE_API_KEY_NEXT must differ from E2E_SERVICE_API_KEY");
   }
   return keys;
+}
+
+/**
+ * Parses `E2E_WEB_USERS=username:password:role,other:password:role`. The password is everything
+ * between the first and last `:` (so it may itself contain `:`), which only the username and role
+ * may not; entries are comma-separated, so neither may contain `,` either. Unlike the API key, this
+ * is optional: an empty value just means the web's login screen has no one who can sign in yet.
+ */
+function readWebUsers(env: NodeJS.ProcessEnv, problems: Problems): WebUserCredential[] {
+  const raw = env.E2E_WEB_USERS?.trim();
+  if (!raw) return [];
+
+  const users: WebUserCredential[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw.split(",")) {
+    const part = entry.trim();
+    if (!part) continue;
+    const segments = part.split(":");
+    if (segments.length < 3) {
+      problems.add(`Invalid E2E_WEB_USERS entry "${part}" (expected username:password:role)`);
+      continue;
+    }
+    const username = segments[0]!.trim();
+    const role = segments[segments.length - 1]!.trim();
+    const password = segments.slice(1, -1).join(":");
+
+    if (!WEB_USERNAME.test(username)) {
+      problems.add(`E2E_WEB_USERS: invalid username "${username}" (expected ${WEB_USERNAME})`);
+    } else if (seen.has(username)) {
+      problems.add(`E2E_WEB_USERS: duplicate username "${username}"`);
+    } else if (password.length < MIN_WEB_PASSWORD_LENGTH) {
+      problems.add(`E2E_WEB_USERS: the password for "${username}" must be at least ${MIN_WEB_PASSWORD_LENGTH} characters long`);
+    } else if (!WEB_ROLES.includes(role as WebRole)) {
+      problems.add(`E2E_WEB_USERS: invalid role "${role}" for "${username}" (expected ${WEB_ROLES.join(", ")})`);
+    } else {
+      seen.add(username);
+      users.push({ username, password, role: role as WebRole });
+    }
+  }
+  return users;
 }
 
 function readServer(env: NodeJS.ProcessEnv, problems: Problems): ServiceConfig["server"] {
@@ -161,6 +204,7 @@ function readProjects(env: NodeJS.ProcessEnv, readFile: ReadTextFile, problems: 
 export function loadConfig(env: NodeJS.ProcessEnv, readFile: ReadTextFile = readUtf8): ServiceConfig {
   const problems = new Problems();
   const apiKeys = readApiKeys(env, problems);
+  const webUsers = readWebUsers(env, problems);
   const server = readServer(env, problems);
   const dataDir = readAbsolutePath(env, "E2E_SERVICE_DATA_DIR", problems);
   const projects = readProjects(env, readFile, problems);
@@ -175,5 +219,5 @@ export function loadConfig(env: NodeJS.ProcessEnv, readFile: ReadTextFile = read
   }
 
   if (problems.any) throw new ConfigError(problems.list);
-  return { server, apiKeys, dataDir, projects, detox };
+  return { server, apiKeys, webUsers, dataDir, projects, detox };
 }

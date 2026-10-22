@@ -14,8 +14,14 @@ Problemas que resuelve:
 - Un historial de jobs que sobrevive reinicios (hoy: mapa en memoria + `meta.json`).
 - Cambiar de rama para consultar sin romper un job en ejecución.
 
-Fuera de alcance: ejecutar varios jobs de Detox en paralelo (dispositivos y puertos WS son físicos), contenerizar el
-servicio (necesita `adb`/USB y el socket de Docker del host) y usuarios individuales (hay una clave compartida).
+Fuera de alcance: ejecutar varios jobs de Detox en paralelo (dispositivos y puertos WS son físicos) y contenerizar el
+servicio (necesita `adb`/USB y el socket de Docker del host).
+
+**Usuarios individuales (actualizado en STA-34):** la decisión original de esta sección era "no hay, solo una clave
+compartida". STA-34 la revierte a pedido del usuario: la web necesita una pantalla de login con roles
+(`e2e-mobile`/`e2e-cypress`/`admin`). Ver §6 y la fila correspondiente en §11 — la clave compartida (`apiKeys`) sigue
+existiendo igual que antes, sin cambios, para los clientes de máquina (CLI, futuro n8n de STA-35); los usuarios son
+un mecanismo aparte, solo para la web.
 
 ### 1.1 Lo que el orquestador tiene hoy y qué pasa con ello
 
@@ -312,6 +318,15 @@ protegido sin un job que lo use.
   clave y acepta dos claves a la vez para poder rotarla. Los navegadores no pueden poner cabeceras en un WebSocket:
   se usa un **ticket de un solo uso y vida corta**, obtenido con un POST autenticado; la clave de larga vida nunca va
   en la URL (nginx la registraría).
+- **Login de la web (STA-34), aparte de la API key:** `POST /v1/auth/login` (username+password contra una lista fija
+  en `E2E_WEB_USERS`, mismo modelo de confianza que la API key: texto plano en una variable de entorno, nunca
+  logueado, comparado con `timingSafeEqual` incluso para un usuario que no existe) devuelve un token de sesión
+  (`WebSessions`, en memoria, TTL de 12h — igual que `StreamTickets`, un restart desloguea a todos sin daño). Ese
+  token viaja también como `Authorization: Bearer`, y `AuthGuard` (antes `ApiKeyGuard`) prueba primero la API key y
+  luego una sesión: una sesión válida nunca abre más que su rol, una API key válida sigue abriendo todo (los clientes
+  de máquina no cambian). `@Roles(...)` en un controlador exige uno de esos roles o `admin`; no tiene efecto sobre
+  una petición con API key. `GET /v1/auth/me` y `POST /v1/auth/logout` completan el ciclo para la web (restaurar
+  sesión al recargar, cerrar sesión).
 - **Enlaces abribles** (log, reporte): token por job, solo lectura, con expiración, como el `accessToken` del
   orquestador. Distinto de la API key.
 - **Transporte:** el servicio escucha en localhost; nginx pone TLS y el límite de tamaño de cuerpo y de tasa.
@@ -403,10 +418,27 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 | `test/webhook-dispatch.test.ts` solo prueba el camino de fallo (host `.invalid`, nunca resuelve) | El original del orquestador no tenía ninguna prueba de `dispatch.ts` (solo `sign`/`url-guard`/`payload`, igual que pide el criterio de aceptación de STA-32), y `assertWebhookDestinationSafe` bloquea `127.0.0.1` a propósito (anti-SSRF), así que un servidor de prueba local sería rechazado como el ataque real que el guard previene. El camino de éxito (un POST real a un receptor) no tiene prueba aquí; queda para cuando STA-35 cablee esto contra un receptor de verdad |
 | `postJobWebhookEvent` recibe un `Diagnostics` genérico opcional (silencioso por defecto) y loguea cada entrega fallida | El original logueaba con el `Logger` de Nest; como esta carpeta no debe depender de Nest, se perdía toda visibilidad de fallos de webhook. El agente de review lo marcó como should-fix; se corrigió reusando la interfaz `Diagnostics` que ya existe en `core/` |
 | `fetch` sigue redirects 3xx sin volver a pasar la URL final por `assertWebhookDestinationSafe` | Hueco de SSRF heredado del original (no introducido aquí: el orquestador tampoco fijaba `redirect: "manual"`). Si un subscriptor legítimo responde con una redirección hacia una IP interna, `fetch` la sigue sin re-validar. Queda para STA-35: fijar `redirect: "manual"` y tratar cualquier 3xx como fallo al cablear el dispatch real |
+| STA-34: `E2E_WEB_USERS` es una lista fija en texto plano (`usuario:password:rol`, separada por comas; el password puede contener `:`, solo el usuario y el rol no), no una tabla en SQLite | El usuario eligió este modelo explícitamente (mismo nivel de confianza que `E2E_SERVICE_API_KEY`, sin alta/gestión propia); evita una dependencia nueva de hashing (bcrypt/argon2) y migra nada en la base. Se agregó a `SERVICE_SECRET_NAMES` para que nunca llegue a un proceso hijo de Detox, el mismo bug que se encontró y arregló en STA-38 |
+| `WebSessions` en memoria (no SQLite), TTL fijo de 12h, igual patrón que `StreamTickets` | Un restart del servicio desloguea a todos sin daño (solo hay que volver a entrar); nada fuera de este proceso necesita leer una sesión. Evita una tabla nueva y la complejidad de session storage distribuido, que no hace falta para un solo proceso |
+| `AuthGuard` reemplaza a `ApiKeyGuard` como `APP_GUARD`: prueba la API key primero, luego una sesión de usuario | Una sola puerta de entrada en vez de dos guards encadenados; una petición con API key sigue abriendo todo (sin romper la CLI ni el futuro n8n de STA-35), y `@Roles(...)` solo restringe una sesión de usuario, nunca una API key |
+| `admin` no tiene ningún permiso adicional hoy, más allá de que no lo bloquea ningún `@Roles(...)` | El usuario lo pidió así explícitamente ("nada más por ahora"); si más adelante necesita gestionar usuarios o actuar sobre jobs de otros, es una decisión nueva, no asumida de antemano |
+| `ProjectsController` y `JobsController` llevan `@Roles("e2e-mobile")` a nivel de clase | Hoy Detox es el único proyecto; un usuario `e2e-cypress` no tiene nada que hacer ahí todavía (Cypress no está construido). Es a propósito más estricto que "ocultar en la UI": el rol se exige también en el servidor |
+| `AuthGuard` inyecta `Reflector` con `@Inject(Reflector)` explícito, no por tipo | `tsx`/esbuild no emite `design:paramtypes`; sin un token explícito, Nest no puede resolverlo y el guard fallaba con un 500 en **cada** petición (encontrado al correr la batería de pruebas tras implementarlo, antes de la revisión) |
+| `WebUserDirectory` precalcula el digest de cada contraseña en el constructor, nunca por llamada | El agente de review midió (200k iteraciones, esta máquina) una diferencia real de ~440ns entre un usuario conocido (recalculaba `digest()` en cada `verify`) y uno desconocido (reusaba un buffer precalculado): un canal de tiempo que permite enumerar usuarios válidos sin depender del código de estado. `ApiKeyVerifier` ya evitaba esto mismo; ahora ambos son consistentes |
+| `WebSessions` limita a `MAX_SESSIONS_PER_USER` (5) las sesiones vivas por usuario, descartando las más viejas de ese mismo usuario al emitir una nueva | `sweep()` solo borra sesiones ya vencidas, nunca limita cuántas viven a la vez; una credencial filtrada (o un script en loop contra `/v1/auth/login`) podía acumular sesiones sin límite durante las 12h de TTL. `Map` conserva el orden de inserción, así que no hace falta un campo `issuedAt` para saber cuáles son las más viejas |
+| STA-34 (web): `react-router-dom` se fija en `^7.18.4`, no `^6.28.0` como el orquestador | `6.28.0` cae en el rango vulnerable de dos CVEs moderados/altos (open redirect en `<Link>`/`useNavigate`, inyección de constructor arbitrario en la hidratación SSR) que solo se parchean en `7.18.4+`, nunca con un backport a 6.x. Es la misma librería ya aprobada, solo una versión mayor más nueva — no una dependencia nueva. La API usada (`Routes`/`Route`/`Link`/`NavLink`/`useParams`/`useNavigate`/`Navigate`/`useSearchParams`) no cambió entre v6 y v7 |
+| El `esbuild`/`vite` del servidor de desarrollo (`npm run dev`) queda con una CVE moderada sin parchear (cualquier sitio puede pedirle algo al dev server y leer la respuesta) | Solo afecta `vite dev`, nunca `vite build`/producción; el parche implica un salto mayor a vite 8, no aprobado. Mismo riesgo aceptado que ya tiene `perfect-e2e-orchestrator/web` con su `vite@^5.4.11` fijo |
+| La pantalla de un escenario (`ScenarioDetailPage.tsx` de la web) no replica el editor de plan de APK por app (rama/ws-host) que tiene el del orquestador | Ese modelo (STA-44/45) no existe en este servicio todavía; lo que sí hay es `POST /v1/jobs` simple. La página ofrece lo que el backend realmente soporta hoy: ejecutar el escenario en la rama elegida y ver sus jobs relacionados, no un plan de APK |
+| La pestaña Reportes lista los jobs terminados pero no puede abrir el contenido del reporte | `job.reportPath` es interno (`src/core/job.ts`), nunca se expuso por API — ni `JobView` ni el payload de webhooks lo incluyen a propósito. Falta un endpoint nuevo para servir el reporte; no se inventó su forma (¿HTML de Detox? ¿summary.json?) sin confirmarla primero |
+| `web/vite.config.ts` usa `base` por defecto (absoluto, `/`), no `base: "./"` con el truco de `<base>` que usa el orquestador para su prefijo fijo `/orchestrator/` | El prefijo de nginx para este servicio todavía no está decidido (STA-36); un `base` absoluto funciona sin prefijo y evita construir una detección de un prefijo que podría no ser el que se termine eligiendo. Si STA-36 define uno, se resuelve igual que el orquestador |
+| `JobLogPage.tsx` guarda un `generationRef` que su propio `connect()` revisa antes de cada `setLog`/`setLive`/asignar `socketRef` | Sin él, una navegación rápida entre dos jobs (o el doble-montaje de `<StrictMode>`) podía dejar el socket de un job huérfano (nunca cerrado, streameando igual) mientras la página muestra el log de otro — encontrado por el agente de review, reproducible en desarrollo por el doble-montaje de StrictMode |
+| `JobLogPage.tsx` vuelve a pedir el job (`refreshJob`) cuando el socket se cierra, no solo al montar | Sin eso, el badge de estado y el botón "Reconectar" quedaban mostrando "Corriendo" para siempre después de que el job realmente terminara (el cierre normal con código 1000 nunca refrescaba nada) |
+| `AuthContext.tsx` usa la forma funcional de `setState` para aplicar el resultado de `/v1/auth/me` solo si el estado seguía en `"loading"` | Sin esa guarda, un `login()` exitoso hecho mientras la comprobación de la sesión guardada todavía estaba en vuelo podía ser revertido a `"anonymous"` cuando esa comprobación (ya obsoleta) resolvía después — encontrado por el agente de review |
+| `EscenariosPage.tsx` tiene un `browseGeneration` que `browse()` revisa antes de aplicar su resultado | El catálogo tiene una sola posición de navegación global (sección 2.3); cambiar de rama antes de que el `browse`+`targets` anterior termine podía dejar el selector mostrando una rama distinta de los escenarios realmente listados, si la respuesta más vieja llegaba después que la más nueva |
+| `web/src/usePolling.ts` y `errorMessage()` (en `api/client.ts`) comparten lo que antes eran tres copias idénticas de `useEffect`+`setInterval` y siete copias de `err instanceof ApiError ? err.message : String(err)` | Nits del agente de review; `DETOX_PROJECT` también se movió de `MobileLayout.tsx` (un componente de layout) a `api/types.ts`, donde un dato del dominio compartido por cuatro páginas no relacionadas con la navegación tiene más sentido |
 
 ## 12. Preguntas abiertas
 
-- Aprobar React/Vite para la web (STA-34).
 - Retención de las refs `refs/e2e/jobs/*` y de logs/reportes antiguos (se resuelve en STA-28 y STA-36).
 - Idioma de la documentación: este documento está en español; el código y los identificadores, en inglés.
 - Redacción de secretos **por valor** en los logs de job (la sección 6 la promete; STA-38 solo filtra por nombre de
@@ -415,3 +447,13 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 - STA-43 menciona "los logs de cualquier job siguen disponibles siempre (en vivo si corre, repetición si terminó)"
   en su alcance; eso es exactamente lo que entrega STA-31 (`GET /v1/jobs/:id/log` y el WebSocket). STA-43 en sí
   solo agrega `retry`; servir el log de un job ya escrito por `FileJobLog` queda para STA-31, no se adelantó aquí.
+- STA-34 (web) se amplió a pedido del usuario el 2026-10-21/22, más allá de "base y ventana Jobs": login con roles
+  (`e2e-mobile`/`e2e-cypress`/`admin`), landing con dos cards (Cypress deshabilitada, no construida todavía), y
+  dentro de Mobile un navbar Escenarios/Jobs/Reportes en vez de Jobs/Configuración/Dispositivos. El backend de
+  roles+login y la web completa (login, landing, las tres pestañas) ya están escritos y probados de punta a punta
+  (`curl`/WebSocket reales contra un servidor de prueba) en esta sesión; falta decidir:
+  - ¿Un endpoint nuevo para servir el contenido de un reporte (y en qué forma)? Hoy Reportes solo lista jobs.
+  - ¿Vale la pena aprobar un framework de pruebas para la web (vitest + React Testing Library, dependencias
+    nuevas)? Hoy la única verificación es manual/`curl` contra la API real, sin pruebas automatizadas del lado
+    de React.
+  - El prefijo de nginx para la web (si lo hay) sigue pendiente de STA-36.

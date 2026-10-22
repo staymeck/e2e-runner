@@ -1,11 +1,6 @@
-import * as fs from "node:fs";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Socket } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
-
-function debugLog(message: string): void {
-  fs.appendFileSync("/tmp/debug-close.log", `${Date.now()} ${message}\n`);
-}
 import type { StreamTickets } from "../auth/stream-ticket";
 import { isTerminal } from "../core/job";
 import type { JobLogReader } from "../core/job-log";
@@ -27,7 +22,7 @@ export interface LogStreamDeps {
 /**
  * Attaches the log-tailing WebSocket directly to the HTTP server, outside of Nest's own request
  * pipeline: a browser's WebSocket handshake cannot carry an `Authorization` header, so this path is
- * guarded by a one-time ticket in the query string instead of `ApiKeyGuard`. Returns a function that
+ * guarded by a one-time ticket in the query string instead of `AuthGuard`. Returns a function that
  * detaches it and closes every open connection, for a clean shutdown.
  */
 export function attachLogStream(server: HttpServer, deps: LogStreamDeps): () => void {
@@ -109,13 +104,8 @@ export function attachLogStream(server: HttpServer, deps: LogStreamDeps): () => 
   }
 
   return () => {
-    debugLog(`detach(): ${sockets.size} sockets tracked`);
     server.off("upgrade", onUpgrade);
-    for (const ws of sockets) {
-      debugLog(`detach(): closing a socket, readyState=${ws.readyState}`);
-      ws.close(1001, "server shutting down");
-    }
+    for (const ws of sockets) ws.close(1001, "server shutting down");
     wss.close();
-    debugLog("detach(): wss.close() returned");
   };
 }

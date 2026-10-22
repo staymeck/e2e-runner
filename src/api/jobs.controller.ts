@@ -1,10 +1,13 @@
 import { Body, Controller, Get, HttpCode, Inject, Param, Post, Query } from "@nestjs/common";
+import { Roles } from "../auth/access-control";
 import { STREAM_TICKETS, StreamTickets } from "../auth/stream-ticket";
 import { JOB_LOG_READER, type JobLogReader, type LogChunk } from "../core/job-log";
 import { JOB_SERVICE, type JobService } from "../core/job-service";
 import { toJobView, type JobView } from "./job-view";
 import { parseList, parseLogFrom, parseSubmit } from "./request-parsing";
 
+/** Scoped to `e2e-mobile`; see `ProjectsController` for why, and why a service-key request is unaffected. */
+@Roles("e2e-mobile")
 @Controller("v1/jobs")
 export class JobsController {
   constructor(
