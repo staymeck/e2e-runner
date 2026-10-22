@@ -72,6 +72,19 @@ a {
   color: var(--muted);
 }
 
+/* A field with no caption of its own (like the Fetch button) still needs the same column structure
+   as a captioned one, so its control lands at the exact same height as a select/input next to it. */
+.field-spacer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-spacer-label {
+  font-size: 13px;
+  visibility: hidden;
+}
+
 input,
 select {
   background: var(--panel);
@@ -80,9 +93,32 @@ select {
   border-radius: 6px;
   padding: 6px 10px;
   font-size: 14px;
+  font-family: inherit;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Resets the browser's own native control chrome (the beveled dropdown button look) in favor of a
+   flat style consistent with everything else, with a custom flat chevron in its place. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%238b92a0' stroke-width='1.5'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 14px;
+  padding-right: 30px;
+  cursor: pointer;
 }
 
 .btn {
+  appearance: none;
+  -webkit-appearance: none;
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
@@ -90,6 +126,7 @@ select {
   padding: 7px 14px;
   cursor: pointer;
   font-size: 14px;
+  font-family: inherit;
 }
 
 .btn:hover:not(:disabled) {
@@ -111,6 +148,29 @@ select {
 .btn-small {
   padding: 4px 10px;
   font-size: 12px;
+}
+
+.btn-fetch {
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 24px;
+  font-size: 15px;
+  background: #3a3d45;
+  border-color: #4a4e57;
+}
+
+.btn-fetch:hover:not(:disabled) {
+  background: #454953;
+  border-color: #4a4e57;
+}
+
+/* Approximately 40% of the screen, as asked, bounded so it stays usable on a narrow or very wide window. */
+.branch-select {
+  width: 40vw;
+  min-width: 220px;
+  max-width: 480px;
+  height: 38px;
 }
 
 .row-actions {

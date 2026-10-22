@@ -6,7 +6,6 @@ import { DETOX_PROJECT, type CatalogTarget } from "../../api/types";
 export function EscenariosPage() {
   const [refs, setRefs] = useState<string[] | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
-  const [sha, setSha] = useState<string | null>(null);
   const [targets, setTargets] = useState<CatalogTarget[] | null>(null);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,9 +30,8 @@ export function EscenariosPage() {
     setError(null);
     api.projects
       .browse(DETOX_PROJECT, ref)
-      .then(({ sha: positioned }) => {
+      .then(() => {
         if (!isCurrent()) return undefined;
-        setSha(positioned);
         return api.projects.targets(DETOX_PROJECT);
       })
       .then((result) => {
@@ -70,7 +68,7 @@ export function EscenariosPage() {
       <div className="field-row">
         <label>
           Rama
-          <select value={branch ?? ""} onChange={(e) => setBranch(e.target.value)}>
+          <select className="branch-select" value={branch ?? ""} onChange={(e) => setBranch(e.target.value)}>
             {(refs ?? []).map((ref) => (
               <option key={ref} value={ref}>
                 {ref}
@@ -78,10 +76,12 @@ export function EscenariosPage() {
             ))}
           </select>
         </label>
-        <button className="btn btn-small" onClick={onFetch} disabled={fetching}>
-          {fetching ? "Buscando…" : "Fetch"}
-        </button>
-        {sha && <span className="muted mono">{sha.slice(0, 8)}</span>}
+        <div className="field-spacer">
+          <span className="field-spacer-label">&nbsp;</span>
+          <button className="btn btn-fetch" onClick={onFetch} disabled={fetching}>
+            {fetching ? "Buscando…" : "Fetch"}
+          </button>
+        </div>
       </div>
       {error && <p className="error">{error}</p>}
       {!targets ? (
