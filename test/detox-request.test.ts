@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DETOX_KINDS, detoxCliArgs, namesAScenario, planDetoxPhases, validateDetoxRequest } from "../src/adapters/detox/detox-request";
+import { DETOX_KINDS, JOB_APK_PLAN_DIR, detoxCliArgs, namesAScenario, planDetoxPhases, validateDetoxRequest } from "../src/adapters/detox/detox-request";
 import { InvalidJobRequestError } from "../src/core/job-request";
 
 const check = (kind: string, target: string, params: unknown = null) => validateDetoxRequest({ kind, target, params });
@@ -35,6 +35,16 @@ describe("validateDetoxRequest", () => {
     refuses("build", "login", { build: false }, /unknown param "build"/);
   });
 
+  it("branches overrides one app's branch for this job only", () => {
+    assert.deepEqual(check("build", "login", { branches: { kpmake: "fb-foo", kpfry: "fb-bar" } }), { branches: { kpmake: "fb-foo", kpfry: "fb-bar" } });
+    refuses("build", "login", { branches: {} }, /1 to 20 entries/);
+    refuses("build", "login", { branches: Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`app${i}`, "main"])) }, /1 to 20 entries/);
+    refuses("build", "login", { branches: [] }, /app name to branch name/);
+    refuses("build", "login", { branches: "main" }, /app name to branch name/);
+    for (const key of ["--force", "-x", "a b", "a;b", "../x", ""]) refuses("build", "login", { branches: { [key]: "main" } }, /not a valid app name/);
+    for (const branch of ["--force", "-x", "a b", "../x", "", "HEAD", 5]) refuses("build", "login", { branches: { kpmake: branch } }, /valid branch name/);
+  });
+
   it("build options are typed and cannot be taken for flags or paths", () => {
     refuses("build", "all", { skipBuild: "yes" }, /true or false/);
     refuses("build", "all", { only: "kpmake" }, /list of 1 to 20/);
@@ -59,6 +69,12 @@ describe("validateDetoxRequest", () => {
     refuses("build", "all", JSON.parse('{"__proto__":{"x":1}}'), /unknown param/);
     refuses("run", "x", JSON.parse('{"constructor":1}'), /takes no params/);
   });
+
+  it("rejects a prototype key inside branches too, and never pollutes Object.prototype", () => {
+    refuses("build", "login", JSON.parse('{"branches":{"__proto__":{"x":1}}}'), /not a valid app name/);
+    assert.deepEqual(check("build", "login", JSON.parse('{"branches":{"constructor":"main"}}')), { branches: { constructor: "main" } });
+    assert.equal(({} as Record<string, unknown>).x, undefined, "Object.prototype must stay clean");
+  });
 });
 
 describe("planDetoxPhases", () => {
@@ -76,21 +92,39 @@ describe("detoxCliArgs", () => {
     assert.deepEqual(detoxCliArgs({ kind: "run", target: "login", params: {} }, "scenario"), ["scenario", "login", "--mode", "production"]);
   });
 
-  it("builds the APKs of one scenario or of everything", () => {
-    assert.deepEqual(detoxCliArgs({ kind: "build", target: "login", params: {} }, "build"), ["generate-apk-production", "--scenario", "login"]);
-    assert.deepEqual(detoxCliArgs({ kind: "build", target: "all", params: {} }, "build"), ["generate-apk-production"]);
+  it("builds the APKs of one scenario or of everything, always redirected to the job's own plan folder", () => {
+    assert.deepEqual(detoxCliArgs({ kind: "build", target: "login", params: {} }, "build"), ["generate-apk-production", "--scenario", "login", "--out", JOB_APK_PLAN_DIR]);
+    assert.deepEqual(detoxCliArgs({ kind: "build", target: "all", params: {} }, "build"), ["generate-apk-production", "--out", JOB_APK_PLAN_DIR]);
     assert.deepEqual(
       detoxCliArgs({ kind: "build", target: "login", params: { wsHost: "10.0.0.5", skipBuild: true, noClone: true, only: ["kpmake", "kpfry"] } }, "build"),
-      ["generate-apk-production", "--scenario", "login", "--ws-host", "10.0.0.5", "--skip-build", "--no-clone", "--only", "kpmake", "--only", "kpfry"],
+      ["generate-apk-production", "--scenario", "login", "--out", JOB_APK_PLAN_DIR, "--ws-host", "10.0.0.5", "--skip-build", "--no-clone", "--only", "kpmake", "--only", "kpfry"],
     );
+  });
+
+  it("never touches the catalog's real apk-production/, even with no branches override", () => {
+    assert.ok(!detoxCliArgs({ kind: "build", target: "all", params: {} }, "build").includes("apk-production"));
+  });
+
+  it("passes each app's branch override as its own --branch-override app=branch", () => {
+    assert.deepEqual(detoxCliArgs({ kind: "build", target: "login", params: { branches: { kpmake: "fb-foo", kpfry: "fb-bar" } } }, "build"), [
+      "generate-apk-production",
+      "--scenario",
+      "login",
+      "--out",
+      JOB_APK_PLAN_DIR,
+      "--branch-override",
+      "kpmake=fb-foo",
+      "--branch-override",
+      "kpfry=fb-bar",
+    ]);
   });
 
   it("a pipeline builds then runs everything of its scope, as the nightly run does", () => {
     const all = { kind: "pipeline", target: "all", params: { noClone: true } };
-    assert.deepEqual(detoxCliArgs(all, "build"), ["generate-apk-production", "--no-clone"]);
+    assert.deepEqual(detoxCliArgs(all, "build"), ["generate-apk-production", "--out", JOB_APK_PLAN_DIR, "--no-clone"]);
     assert.deepEqual(detoxCliArgs(all, "scenario"), ["scenario", "--all", "--mode", "production"]);
     const batch = { kind: "pipeline", target: "batch", params: {} };
-    assert.deepEqual(detoxCliArgs(batch, "build"), ["generate-apk-production", "--kind", "batch"]);
+    assert.deepEqual(detoxCliArgs(batch, "build"), ["generate-apk-production", "--kind", "batch", "--out", JOB_APK_PLAN_DIR]);
     assert.deepEqual(detoxCliArgs(batch, "scenario"), ["scenario", "--all", "--mode", "production", "--kind", "batch"]);
   });
 

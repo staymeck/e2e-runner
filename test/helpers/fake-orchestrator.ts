@@ -38,6 +38,7 @@ console.log("cwd=" + process.cwd());
 console.log("args=" + JSON.stringify(args));
 console.log("job=" + env.PERFECT_QA_JOB_ID + " phase=" + env.PERFECT_QA_JOB_PHASE);
 console.log("catalog=" + env.PERFECT_QA_ORIGINAL_DIR + " package=" + env.ORCH_PACKAGE_ROOT);
+console.log("apk-production-dir=" + env.ORCH_APK_PRODUCTION_DIR);
 console.log("service-key-visible=" + Boolean(env.E2E_SERVICE_API_KEY));
 console.error("a line on stderr");
 

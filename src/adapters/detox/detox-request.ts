@@ -1,4 +1,5 @@
 import type { JobRequestInput } from "../../core/adapter";
+import { isValidBranchName } from "../../core/branch-pattern";
 import { InvalidJobRequestError } from "../../core/job-request";
 
 export const DETOX_KINDS = ["run", "build", "pipeline"] as const;
@@ -8,9 +9,18 @@ export type PipelineScope = "all" | "batch" | "step";
 const SCOPES: readonly string[] = ["all", "batch", "step"];
 
 const MAX_ONLY = 20;
+const MAX_BRANCHES = 20;
 const APP_OR_SCENARIO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** A host name or an IPv4 address: what the devices connect back to. Never an option, never a URL. */
 const WS_HOST = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+
+/**
+ * The job's own plan folder, never the catalog's real `apk-production/`: every build always redirects
+ * there via `--out`, whether or not it overrides any app's branch (STA-44). `git clean -ffd` (run before
+ * every checkout, see `git-repo.ts`) wipes it between jobs since it is untracked and not gitignored —
+ * harmless, since `generate-apk-production` always regenerates it fully before reading it back.
+ */
+export const JOB_APK_PLAN_DIR = "e2e-runner-apk-plan";
 
 /** What `generate-apk-production` accepts, and nothing else. */
 export interface BuildOptions {
@@ -18,6 +28,14 @@ export interface BuildOptions {
   noClone?: boolean;
   only?: string[];
   wsHost?: string;
+  /**
+   * One app's branch for this job only (e.g. `{ kpmake: "fb-foo", kpfry: "fb-bar" }`), overriding the
+   * catalog's own registered default for that app; an app left out keeps that default. Applies to the
+   * app's own repo, a different one from the catalog's — not validated against the project's
+   * `allowedBranches` (that governs the catalog repo only); `isValidBranchName` below is the real guard,
+   * the same one a CLI argument needs regardless of which repo it ends up naming.
+   */
+  branches?: Record<string, string>;
 }
 
 export interface PipelineOptions extends BuildOptions {
@@ -27,7 +45,7 @@ export interface PipelineOptions extends BuildOptions {
 
 export type DetoxParams = BuildOptions & PipelineOptions;
 
-const BUILD_KEYS: readonly string[] = ["skipBuild", "noClone", "only", "wsHost"];
+const BUILD_KEYS: readonly string[] = ["skipBuild", "noClone", "only", "wsHost", "branches"];
 const PIPELINE_KEYS: readonly string[] = [...BUILD_KEYS, "build"];
 
 function isDetoxKind(kind: string): kind is DetoxKind {
@@ -60,16 +78,33 @@ function wsHost(params: Record<string, unknown>): string | undefined {
   return value;
 }
 
+function branches(params: Record<string, unknown>): Record<string, string> | undefined {
+  const value = params.branches;
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new InvalidJobRequestError("branches must be an object of app name to branch name");
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0 || entries.length > MAX_BRANCHES) throw new InvalidJobRequestError(`branches must have 1 to ${MAX_BRANCHES} entries`);
+  const result: Record<string, string> = {};
+  for (const [app, branch] of entries) {
+    if (!APP_OR_SCENARIO_NAME.test(app)) throw new InvalidJobRequestError(`branches holds a key that is not a valid app name: "${app}"`);
+    if (typeof branch !== "string" || !isValidBranchName(branch)) throw new InvalidJobRequestError(`branches.${app} must be a valid branch name`);
+    result[app] = branch;
+  }
+  return result;
+}
+
 function build(params: Record<string, unknown>): BuildOptions {
   const result: BuildOptions = {};
   const skipBuild = flag(params, "skipBuild");
   const noClone = flag(params, "noClone");
   const only = names(params);
   const host = wsHost(params);
+  const branchOverrides = branches(params);
   if (skipBuild !== undefined) result.skipBuild = skipBuild;
   if (noClone !== undefined) result.noClone = noClone;
   if (only !== undefined) result.only = only;
   if (host !== undefined) result.wsHost = host;
+  if (branchOverrides !== undefined) result.branches = branchOverrides;
   return result;
 }
 
@@ -121,11 +156,12 @@ export function planDetoxPhases(request: { kind: string; params: unknown }): rea
 }
 
 function buildFlags(options: BuildOptions): string[] {
-  const flags: string[] = [];
+  const flags: string[] = ["--out", JOB_APK_PLAN_DIR];
   if (options.wsHost) flags.push("--ws-host", options.wsHost);
   if (options.skipBuild) flags.push("--skip-build");
   if (options.noClone) flags.push("--no-clone");
   for (const name of options.only ?? []) flags.push("--only", name);
+  for (const [app, branch] of Object.entries(options.branches ?? {})) flags.push("--branch-override", `${app}=${branch}`);
   return flags;
 }
 
