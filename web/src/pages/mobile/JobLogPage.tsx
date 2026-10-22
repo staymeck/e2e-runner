@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, ApiError } from "../../api/client";
+import { api, errorMessage } from "../../api/client";
 import type { JobView } from "../../api/types";
 import { StatusBadge } from "../../components/StatusBadge";
 
@@ -17,38 +17,66 @@ export function JobLogPage() {
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
-  const offsetRef = useRef(0);
+  // Bumped by the effect's cleanup, so a `connect()` left over from a fast remount or a fast
+  // job-to-job navigation (its awaits still pending) never applies its result once superseded —
+  // found by review: without this, two overlapping connects could leak a socket and cross the log
+  // of one job into the page now showing a different one.
+  const generationRef = useRef(0);
+
+  const refreshJob = (id: string) => {
+    api.jobs
+      .get(id)
+      .then(setJob)
+      .catch((err) => setError(errorMessage(err)));
+  };
 
   const connect = async (id: string) => {
+    const generation = ++generationRef.current;
+    const isCurrent = () => generationRef.current === generation;
     try {
       const initial = await api.jobs.log(id, 0);
+      if (!isCurrent()) return;
       setLog(initial.text);
-      offsetRef.current = initial.nextFrom;
 
       const { ticket } = await api.jobs.streamTicket(id);
+      if (!isCurrent()) return;
+
       const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-      const socket = new WebSocket(`${scheme}//${location.host}/v1/jobs/${encodeURIComponent(id)}/stream?ticket=${ticket}&from=${offsetRef.current}`);
+      const socket = new WebSocket(`${scheme}//${location.host}/v1/jobs/${encodeURIComponent(id)}/stream?ticket=${ticket}&from=${initial.nextFrom}`);
+      if (!isCurrent()) {
+        socket.close();
+        return;
+      }
       socketRef.current = socket;
-      socket.onopen = () => setLive(true);
-      socket.onmessage = (event) => setLog((current) => current + String(event.data));
+      socket.onopen = () => {
+        if (isCurrent()) setLive(true);
+      };
+      socket.onmessage = (event) => {
+        if (isCurrent()) setLog((current) => current + String(event.data));
+      };
       socket.onclose = () => {
+        if (!isCurrent()) return;
         setLive(false);
         socketRef.current = null;
+        refreshJob(id); // the job may just have finished (the usual reason this closes) — stop showing it as running
       };
-      socket.onerror = () => setError("La conexión en vivo se interrumpió");
+      socket.onerror = () => {
+        if (isCurrent()) setError("La conexión en vivo se interrumpió");
+      };
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
+      if (isCurrent()) setError(errorMessage(err));
     }
   };
 
   useEffect(() => {
     if (!jobId) return;
-    api.jobs
-      .get(jobId)
-      .then(setJob)
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
+    refreshJob(jobId);
     connect(jobId);
-    return () => socketRef.current?.close();
+    return () => {
+      generationRef.current++;
+      socketRef.current?.close();
+      socketRef.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 

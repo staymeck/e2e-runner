@@ -1,8 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 
-export const DETOX_PROJECT = "detox";
-
 export function MobileLayout() {
   const { state, logout } = useAuth();
 

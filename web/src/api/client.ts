@@ -11,6 +11,10 @@ export class ApiError extends Error {
   }
 }
 
+export function errorMessage(err: unknown): string {
+  return err instanceof ApiError ? err.message : String(err);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const session = getStoredSession();
   const res = await fetch(path, {

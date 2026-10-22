@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { api, ApiError } from "../../api/client";
-import type { JobView } from "../../api/types";
+import { api, errorMessage } from "../../api/client";
+import { DETOX_PROJECT, type JobView } from "../../api/types";
 import { StatusBadge } from "../../components/StatusBadge";
-import { DETOX_PROJECT } from "./MobileLayout";
+import { usePolling } from "../../usePolling";
 
 const POLL_MS = 3000;
 
@@ -26,14 +26,10 @@ export function ScenarioDetailPage() {
     api.jobs
       .list({ project: DETOX_PROJECT, target: scenarioId, limit: 20 })
       .then((result) => setJobs(result.jobs))
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
+      .catch((err) => setError(errorMessage(err)));
   }, [scenarioId]);
 
-  useEffect(() => {
-    load();
-    const timer = setInterval(load, POLL_MS);
-    return () => clearInterval(timer);
-  }, [load]);
+  usePolling(load, POLL_MS);
 
   if (!scenarioId) return null;
 
@@ -44,7 +40,7 @@ export function ScenarioDetailPage() {
       await api.jobs.submit({ project: DETOX_PROJECT, target: scenarioId, kind: "run", ...(ref ? { ref } : {}) });
       load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
+      setError(errorMessage(err));
     } finally {
       setTriggering(false);
     }

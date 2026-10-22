@@ -4,6 +4,9 @@ export type PhaseStatus = "pending" | "running" | "succeeded" | "failed" | "skip
 export type Outcome = "success" | "warning" | "failure";
 export type WebRole = "e2e-mobile" | "e2e-cypress" | "admin";
 
+/** The only project this web supports today (Cypress has no project of its own yet). */
+export const DETOX_PROJECT = "detox";
+
 export interface PhaseView {
   readonly position: number;
   readonly name: string;

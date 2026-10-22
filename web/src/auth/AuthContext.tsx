@@ -25,17 +25,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: "loading" });
 
   useEffect(() => {
+    // Guards every outcome with "only while still loading": a fast login()/logout() made in the
+    // meantime already set a real state, which this check must never stomp back to anonymous once
+    // its own (now-stale) network call finally resolves — found by review.
     const stored = getStoredSession();
     if (!stored) {
-      setState({ status: "anonymous" });
+      setState((previous) => (previous.status === "loading" ? { status: "anonymous" } : previous));
       return;
     }
     api.auth
       .me()
-      .then((me) => setState(me.kind === "user" ? { status: "authenticated", username: me.username, role: me.role } : { status: "anonymous" }))
+      .then((me) =>
+        setState((previous) =>
+          previous.status !== "loading" ? previous : me.kind === "user" ? { status: "authenticated", username: me.username, role: me.role } : { status: "anonymous" },
+        ),
+      )
       .catch(() => {
-        clearStoredSession();
-        setState({ status: "anonymous" });
+        setState((previous) => {
+          if (previous.status !== "loading") return previous;
+          clearStoredSession();
+          return { status: "anonymous" };
+        });
       });
   }, []);
 

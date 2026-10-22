@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, ApiError } from "../../api/client";
-import type { JobView } from "../../api/types";
+import { api, errorMessage } from "../../api/client";
+import { DETOX_PROJECT, type JobView } from "../../api/types";
 import { OutcomeBadge, StatusBadge } from "../../components/StatusBadge";
-import { DETOX_PROJECT } from "./MobileLayout";
+import { usePolling } from "../../usePolling";
 
 const POLL_MS = 5000;
 const FINISHED = ["succeeded", "failed", "cancelled"] as const;
@@ -23,14 +23,10 @@ export function ReportesPage() {
     api.jobs
       .list({ project: DETOX_PROJECT, statuses: FINISHED, limit: 100 })
       .then((result) => setJobs(result.jobs))
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
+      .catch((err) => setError(errorMessage(err)));
   }, []);
 
-  useEffect(() => {
-    load();
-    const timer = setInterval(load, POLL_MS);
-    return () => clearInterval(timer);
-  }, [load]);
+  usePolling(load, POLL_MS);
 
   return (
     <div className="panel">

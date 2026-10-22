@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, ApiError } from "../../api/client";
-import type { CatalogTarget } from "../../api/types";
-import { DETOX_PROJECT } from "./MobileLayout";
+import { api, errorMessage } from "../../api/client";
+import { DETOX_PROJECT, type CatalogTarget } from "../../api/types";
 
 export function EscenariosPage() {
   const [refs, setRefs] = useState<string[] | null>(null);
@@ -11,6 +10,10 @@ export function EscenariosPage() {
   const [targets, setTargets] = useState<CatalogTarget[] | null>(null);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The server has exactly one browsing position for the whole catalog (see docs/design.md §2.3):
+  // picking a different branch before the previous browse->targets round-trip finished must not let
+  // a slower, now-stale response overwrite what a newer selection already resolved — found by review.
+  const browseGeneration = useRef(0);
 
   useEffect(() => {
     Promise.all([api.projects.list(), api.projects.refs(DETOX_PROJECT)])
@@ -19,19 +22,26 @@ export function EscenariosPage() {
         const project = projects.find((p) => p.id === DETOX_PROJECT);
         setBranch(project?.defaultBranch ?? loaded[0] ?? null);
       })
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
+      .catch((err) => setError(errorMessage(err)));
   }, []);
 
   const browse = useCallback((ref: string) => {
+    const generation = ++browseGeneration.current;
+    const isCurrent = () => browseGeneration.current === generation;
     setError(null);
     api.projects
       .browse(DETOX_PROJECT, ref)
       .then(({ sha: positioned }) => {
+        if (!isCurrent()) return undefined;
         setSha(positioned);
         return api.projects.targets(DETOX_PROJECT);
       })
-      .then(({ targets: loaded }) => setTargets(loaded))
-      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)));
+      .then((result) => {
+        if (result && isCurrent()) setTargets(result.targets);
+      })
+      .catch((err) => {
+        if (isCurrent()) setError(errorMessage(err));
+      });
   }, []);
 
   useEffect(() => {
@@ -46,7 +56,7 @@ export function EscenariosPage() {
       const { refs: loaded } = await api.projects.refs(DETOX_PROJECT);
       setRefs(loaded);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
+      setError(errorMessage(err));
     } finally {
       setFetching(false);
     }
