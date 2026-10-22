@@ -1,5 +1,13 @@
 import { SetMetadata } from "@nestjs/common";
+import type { Request } from "express";
 import type { WebRole } from "../config/service-config";
+
+const BEARER = /^Bearer\s+(\S+)$/i;
+
+/** The raw bearer token from `Authorization`, whatever it turns out to be (API key, web session, or neither). */
+export function bearerTokenOf(request: Request): string | undefined {
+  return BEARER.exec(request.headers.authorization?.trim() ?? "")?.[1];
+}
 
 /** What a request's `Authorization` bearer resolved to, attached by `AuthGuard`. */
 export type RequestAuth = { readonly kind: "service" } | { readonly kind: "user"; readonly username: string; readonly role: WebRole };

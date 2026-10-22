@@ -5,6 +5,8 @@ export const WEB_SESSIONS = Symbol("WEB_SESSIONS");
 
 const TOKEN_BYTES = 32;
 export const DEFAULT_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+/** A username logging in past this many live sessions drops its own oldest ones first. */
+export const MAX_SESSIONS_PER_USER = 5;
 
 interface IssuedSession extends WebUser {
   readonly expiresAt: number;
@@ -18,10 +20,14 @@ interface IssuedSession extends WebUser {
 export class WebSessions {
   private readonly sessions = new Map<string, IssuedSession>();
 
-  constructor(private readonly ttlMs: number = DEFAULT_SESSION_TTL_MS) {}
+  constructor(
+    private readonly ttlMs: number = DEFAULT_SESSION_TTL_MS,
+    private readonly maxPerUser: number = MAX_SESSIONS_PER_USER,
+  ) {}
 
   issue(user: WebUser): string {
     this.sweep();
+    this.evictOldestFor(user.username);
     const token = randomBytes(TOKEN_BYTES).toString("base64url");
     this.sessions.set(token, { ...user, expiresAt: Date.now() + this.ttlMs });
     return token;
@@ -48,5 +54,17 @@ export class WebSessions {
     for (const [token, { expiresAt }] of this.sessions) {
       if (expiresAt < now) this.sessions.delete(token);
     }
+  }
+
+  /**
+   * Drops this username's oldest sessions, leaving room for one more within `maxPerUser` — so a
+   * single leaked credential, or a script logging in repeatedly, cannot grow this map forever just
+   * by logging in again and again; `sweep()` alone only ever removes already-expired entries.
+   * `Map` iterates in insertion order, so this username's own entries are already oldest-first.
+   */
+  private evictOldestFor(username: string): void {
+    const tokens: string[] = [];
+    for (const [token, session] of this.sessions) if (session.username === username) tokens.push(token);
+    while (tokens.length >= this.maxPerUser) this.sessions.delete(tokens.shift()!);
   }
 }

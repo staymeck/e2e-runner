@@ -1,12 +1,10 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import type { Request } from "express";
-import { IS_PUBLIC_KEY, ROLES_KEY } from "../auth/access-control";
+import { bearerTokenOf, IS_PUBLIC_KEY, ROLES_KEY } from "../auth/access-control";
 import { API_KEY_VERIFIER, type CredentialVerifier } from "../auth/api-key-verifier";
 import { WEB_SESSIONS, WebSessions } from "../auth/web-sessions";
 import type { WebRole } from "../config/service-config";
-
-const BEARER = /^Bearer\s+(\S+)$/i;
 
 /**
  * Every route needs `Authorization: Bearer <token>`, unless marked `@Public()`. The token is either
@@ -29,7 +27,7 @@ export class AuthGuard implements CanActivate {
     if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [context.getHandler(), context.getClass()])) return true;
 
     const request = context.switchToHttp().getRequest<Request>();
-    const token = BEARER.exec(request.headers.authorization?.trim() ?? "")?.[1];
+    const token = bearerTokenOf(request);
 
     if (this.apiKeys.verify(token)) {
       request.auth = { kind: "service" };

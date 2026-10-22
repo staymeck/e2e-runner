@@ -1,11 +1,9 @@
 import { Body, Controller, Get, HttpCode, Inject, Post, Req, UnauthorizedException } from "@nestjs/common";
 import type { Request } from "express";
-import { Public } from "../auth/access-control";
+import { bearerTokenOf, Public } from "../auth/access-control";
 import { WEB_SESSIONS, WebSessions } from "../auth/web-sessions";
 import { WEB_USER_DIRECTORY, WebUserDirectory } from "../auth/web-users";
 import { DIAGNOSTICS, type Diagnostics } from "../core/diagnostics";
-
-const BEARER = /^Bearer\s+(\S+)$/i;
 
 function parseLogin(body: unknown): { username: string; password: string } {
   const { username, password } = (body ?? {}) as { username?: unknown; password?: unknown };
@@ -40,14 +38,14 @@ export class AuthController {
   @Post("logout")
   @HttpCode(204)
   logout(@Req() request: Request): void {
-    this.sessions.revoke(BEARER.exec(request.headers.authorization?.trim() ?? "")?.[1]);
+    this.sessions.revoke(bearerTokenOf(request));
   }
 
   /** Lets the web restore who is logged in after a reload, without re-sending credentials. */
   @Get("me")
   me(@Req() request: Request): { kind: "service" } | { kind: "user"; username: string; role: string } {
-    const auth = request.auth;
-    if (!auth) throw new UnauthorizedException();
+    // AuthGuard always sets this before a non-public route runs; this route requires a credential.
+    const auth = request.auth!;
     return auth.kind === "service" ? { kind: "service" } : { kind: "user", username: auth.username, role: auth.role };
   }
 }

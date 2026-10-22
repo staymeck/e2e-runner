@@ -1,14 +1,11 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
+import { digest } from "./crypto";
 
 export const API_KEY_VERIFIER = Symbol("API_KEY_VERIFIER");
 
 /** Decides whether a presented credential is one of the accepted API keys. */
 export interface CredentialVerifier {
   verify(presented: string | undefined): boolean;
-}
-
-function digest(value: string): Buffer {
-  return createHash("sha256").update(value).digest();
 }
 
 /**
