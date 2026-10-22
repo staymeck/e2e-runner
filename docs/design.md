@@ -426,6 +426,11 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 | `AuthGuard` inyecta `Reflector` con `@Inject(Reflector)` explícito, no por tipo | `tsx`/esbuild no emite `design:paramtypes`; sin un token explícito, Nest no puede resolverlo y el guard fallaba con un 500 en **cada** petición (encontrado al correr la batería de pruebas tras implementarlo, antes de la revisión) |
 | `WebUserDirectory` precalcula el digest de cada contraseña en el constructor, nunca por llamada | El agente de review midió (200k iteraciones, esta máquina) una diferencia real de ~440ns entre un usuario conocido (recalculaba `digest()` en cada `verify`) y uno desconocido (reusaba un buffer precalculado): un canal de tiempo que permite enumerar usuarios válidos sin depender del código de estado. `ApiKeyVerifier` ya evitaba esto mismo; ahora ambos son consistentes |
 | `WebSessions` limita a `MAX_SESSIONS_PER_USER` (5) las sesiones vivas por usuario, descartando las más viejas de ese mismo usuario al emitir una nueva | `sweep()` solo borra sesiones ya vencidas, nunca limita cuántas viven a la vez; una credencial filtrada (o un script en loop contra `/v1/auth/login`) podía acumular sesiones sin límite durante las 12h de TTL. `Map` conserva el orden de inserción, así que no hace falta un campo `issuedAt` para saber cuáles son las más viejas |
+| STA-34 (web): `react-router-dom` se fija en `^7.18.4`, no `^6.28.0` como el orquestador | `6.28.0` cae en el rango vulnerable de dos CVEs moderados/altos (open redirect en `<Link>`/`useNavigate`, inyección de constructor arbitrario en la hidratación SSR) que solo se parchean en `7.18.4+`, nunca con un backport a 6.x. Es la misma librería ya aprobada, solo una versión mayor más nueva — no una dependencia nueva. La API usada (`Routes`/`Route`/`Link`/`NavLink`/`useParams`/`useNavigate`/`Navigate`/`useSearchParams`) no cambió entre v6 y v7 |
+| El `esbuild`/`vite` del servidor de desarrollo (`npm run dev`) queda con una CVE moderada sin parchear (cualquier sitio puede pedirle algo al dev server y leer la respuesta) | Solo afecta `vite dev`, nunca `vite build`/producción; el parche implica un salto mayor a vite 8, no aprobado. Mismo riesgo aceptado que ya tiene `perfect-e2e-orchestrator/web` con su `vite@^5.4.11` fijo |
+| La pantalla de un escenario (`ScenarioDetailPage.tsx` de la web) no replica el editor de plan de APK por app (rama/ws-host) que tiene el del orquestador | Ese modelo (STA-44/45) no existe en este servicio todavía; lo que sí hay es `POST /v1/jobs` simple. La página ofrece lo que el backend realmente soporta hoy: ejecutar el escenario en la rama elegida y ver sus jobs relacionados, no un plan de APK |
+| La pestaña Reportes lista los jobs terminados pero no puede abrir el contenido del reporte | `job.reportPath` es interno (`src/core/job.ts`), nunca se expuso por API — ni `JobView` ni el payload de webhooks lo incluyen a propósito. Falta un endpoint nuevo para servir el reporte; no se inventó su forma (¿HTML de Detox? ¿summary.json?) sin confirmarla primero |
+| `web/vite.config.ts` usa `base` por defecto (absoluto, `/`), no `base: "./"` con el truco de `<base>` que usa el orquestador para su prefijo fijo `/orchestrator/` | El prefijo de nginx para este servicio todavía no está decidido (STA-36); un `base` absoluto funciona sin prefijo y evita construir una detección de un prefijo que podría no ser el que se termine eligiendo. Si STA-36 define uno, se resuelve igual que el orquestador |
 
 ## 12. Preguntas abiertas
 
@@ -437,3 +442,13 @@ En el mismo host del lab que los dispositivos (necesita `adb`/USB y Docker del h
 - STA-43 menciona "los logs de cualquier job siguen disponibles siempre (en vivo si corre, repetición si terminó)"
   en su alcance; eso es exactamente lo que entrega STA-31 (`GET /v1/jobs/:id/log` y el WebSocket). STA-43 en sí
   solo agrega `retry`; servir el log de un job ya escrito por `FileJobLog` queda para STA-31, no se adelantó aquí.
+- STA-34 (web) se amplió a pedido del usuario el 2026-10-21/22, más allá de "base y ventana Jobs": login con roles
+  (`e2e-mobile`/`e2e-cypress`/`admin`), landing con dos cards (Cypress deshabilitada, no construida todavía), y
+  dentro de Mobile un navbar Escenarios/Jobs/Reportes en vez de Jobs/Configuración/Dispositivos. El backend de
+  roles+login y la web completa (login, landing, las tres pestañas) ya están escritos y probados de punta a punta
+  (`curl`/WebSocket reales contra un servidor de prueba) en esta sesión; falta decidir:
+  - ¿Un endpoint nuevo para servir el contenido de un reporte (y en qué forma)? Hoy Reportes solo lista jobs.
+  - ¿Vale la pena aprobar un framework de pruebas para la web (vitest + React Testing Library, dependencias
+    nuevas)? Hoy la única verificación es manual/`curl` contra la API real, sin pruebas automatizadas del lado
+    de React.
+  - El prefijo de nginx para la web (si lo hay) sigue pendiente de STA-36.
