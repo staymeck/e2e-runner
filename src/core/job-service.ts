@@ -1,4 +1,4 @@
-import { CatalogUnsupportedError, UnknownProjectError, type AdapterLookup, type ProjectCatalog } from "./adapter";
+import { CatalogUnsupportedError, ProjectHasNoDevicesError, UnknownProjectError, type AdapterLookup, type DeviceStatus, type ProjectCatalog } from "./adapter";
 import { isBranchAllowed } from "./branch-pattern";
 import { JobNotFoundError, type Job, type JobFilter, type JobList, type JobPage } from "./job";
 import type { JobEnqueuer } from "./job-enqueuer";
@@ -14,9 +14,11 @@ export interface ProjectPolicy {
   readonly defaultBranch: string;
 }
 
-/** Cancels a job; the scheduler does it. */
+/** What `JobService` needs from the scheduler: cancelling a job, and why a queued one is not starting. */
 export interface JobCanceller {
   cancel(id: string): Promise<Job>;
+  /** Beyond "something else is using its resource", if the project's adapter has a reason to give. */
+  waitingReasonFor(id: string): string | undefined;
 }
 
 export interface SubmitJob {
@@ -120,5 +122,18 @@ export class JobService {
     const browsable = this.adapters.get(id).browsable;
     if (!browsable) throw new CatalogUnsupportedError(id);
     return browsable;
+  }
+
+  /** The project's devices, with their real connectivity. Throws UnknownProjectError or ProjectHasNoDevicesError. */
+  async devicesOf(id: string): Promise<readonly DeviceStatus[]> {
+    if (!this.policies.has(id)) throw new UnknownProjectError(id);
+    const devices = this.adapters.get(id).devices;
+    if (!devices) throw new ProjectHasNoDevicesError(id);
+    return devices.list();
+  }
+
+  /** See `JobCanceller.waitingReasonFor`. */
+  waitingReasonFor(id: string): string | undefined {
+    return this.canceller.waitingReasonFor(id);
   }
 }

@@ -63,6 +63,7 @@ interface JobBody {
   params: unknown;
   phases: unknown[];
   error?: string;
+  waitingReason?: string | null;
 }
 
 const noJobsOrPins = (api: Api) => {
@@ -192,6 +193,35 @@ describe("a project's catalog (fetch, refs, browse, targets)", () => {
       assert.equal(response.status, 400);
       assert.equal(((await response.json()) as { error: string }).error, "invalid_request");
     }, { ...fakeAdapter("detox", ["devices"]), browsable: catalog });
+  });
+});
+
+describe("GET /v1/projects/:id/devices", () => {
+  it("answers 404 for an unknown project, before touching any adapter", async () => {
+    await withApi(async (api) => {
+      const response = await api.call("GET", "/v1/projects/ghost/devices");
+      assert.equal(response.status, 404);
+      assert.equal(((await response.json()) as { error: string }).error, "unknown_project");
+    });
+  });
+
+  it("answers 404 for a configured project whose adapter has no devices to report", async () => {
+    await withApi(async (api) => {
+      const response = await api.call("GET", "/v1/projects/detox/devices");
+      assert.equal(response.status, 404);
+      assert.equal(((await response.json()) as { error: string }).error, "no_devices");
+    }, fakeAdapter("detox", ["devices"])); // no `devices` attached
+  });
+
+  it("lists the real connectivity a project's device checker reports", async () => {
+    const devices = { list: async () => [{ name: "device_a", state: "connected" as const }, { name: "device_b", state: "disconnected" as const }] };
+    await withApi(async (api) => {
+      const body = await api.json<{ devices: Array<{ name: string; state: string }> }>(api.call("GET", "/v1/projects/detox/devices"));
+      assert.deepEqual(body.devices, [
+        { name: "device_a", state: "connected" },
+        { name: "device_b", state: "disconnected" },
+      ]);
+    }, { ...fakeAdapter("detox", ["devices"]), devices });
   });
 });
 
@@ -389,8 +419,19 @@ describe("GET /v1/jobs/:id", () => {
       const created = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
       const job = await api.json<JobBody>(api.call("GET", `/v1/jobs/${created.id}`));
       assert.deepEqual([job.id, job.phases.length], [created.id, 1]);
+      assert.equal(job.waitingReason, null, "nothing is blocking this job");
       assert.equal((await api.call("GET", "/v1/jobs/ghost")).status, 404);
     });
+  });
+
+  it("shows why a queued job is not starting, when its adapter's canStart says so", async () => {
+    const canStart = async () => ({ ready: false as const, reason: "esperando dispositivo X" });
+    await withApi(async (api) => {
+      const created = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      const job = await api.json<JobBody>(api.call("GET", `/v1/jobs/${created.id}`));
+      assert.equal(job.status, "queued");
+      assert.equal(job.waitingReason, "esperando dispositivo X");
+    }, { ...fakeAdapter("detox", ["devices"]), canStart });
   });
 });
 

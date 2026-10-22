@@ -1,7 +1,7 @@
 import { STATUS_CODES } from "node:http";
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Inject } from "@nestjs/common";
 import type { Response } from "express";
-import { CatalogUnsupportedError, UnknownProjectError } from "../core/adapter";
+import { CatalogUnsupportedError, ProjectHasNoDevicesError, UnknownProjectError } from "../core/adapter";
 import { DIAGNOSTICS, type Diagnostics } from "../core/diagnostics";
 import { InvalidTransitionError, JobAlreadyFinishedError, JobNotFoundError, RetryNotAllowedError } from "../core/job";
 import { CatalogReadError, InvalidJobRequestError, RefNotAllowedError, RefNotFoundError } from "../core/job-request";
@@ -18,6 +18,7 @@ const MAPPINGS: readonly Mapping[] = [
   { type: RefNotAllowedError, status: HttpStatus.FORBIDDEN, code: "ref_not_allowed" },
   { type: UnknownProjectError, status: HttpStatus.NOT_FOUND, code: "unknown_project" },
   { type: CatalogUnsupportedError, status: HttpStatus.NOT_FOUND, code: "catalog_unsupported" },
+  { type: ProjectHasNoDevicesError, status: HttpStatus.NOT_FOUND, code: "no_devices" },
   { type: JobNotFoundError, status: HttpStatus.NOT_FOUND, code: "job_not_found" },
   { type: RefNotFoundError, status: HttpStatus.UNPROCESSABLE_ENTITY, code: "ref_not_found" },
   { type: CatalogReadError, status: HttpStatus.UNPROCESSABLE_ENTITY, code: "catalog_unavailable" },

@@ -135,6 +135,13 @@ export class CatalogUnsupportedError extends Error {
   }
 }
 
+export class ProjectHasNoDevicesError extends Error {
+  constructor(readonly project: string) {
+    super(`Project "${project}" has no devices to report on`);
+    this.name = "ProjectHasNoDevicesError";
+  }
+}
+
 export class UnknownProjectError extends Error {
   constructor(readonly project: string) {
     super(`Unknown project: ${project}`);

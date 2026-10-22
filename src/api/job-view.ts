@@ -32,6 +32,8 @@ export interface JobView {
   /** Name of the phase running now, if any. */
   readonly phase: string | null;
   readonly phases: readonly PhaseView[];
+  /** Beyond "something else is using its resource": e.g. a Detox job waiting on a disconnected device. */
+  readonly waitingReason: string | null;
 }
 
 function toPhaseView(phase: JobPhase): PhaseView {
@@ -47,7 +49,7 @@ function toPhaseView(phase: JobPhase): PhaseView {
   };
 }
 
-export function toJobView(job: Job): JobView {
+export function toJobView(job: Job, waitingReason?: string): JobView {
   return {
     id: job.id,
     project: job.project,
@@ -67,5 +69,6 @@ export function toJobView(job: Job): JobView {
     error: job.error,
     phase: job.phases.find((phase) => phase.status === "running")?.name ?? null,
     phases: job.phases.map(toPhaseView),
+    waitingReason: waitingReason ?? null,
   };
 }
