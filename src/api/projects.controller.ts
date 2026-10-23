@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Inject, Param, Post } from "@nestjs/common";
 import { Roles } from "../auth/access-control";
-import type { CatalogTarget } from "../core/adapter";
+import type { CatalogTarget, DeviceStatus } from "../core/adapter";
 import { JOB_SERVICE, type JobService } from "../core/job-service";
 import { parseBrowse } from "./request-parsing";
 
@@ -53,5 +53,11 @@ export class ProjectsController {
   @Get(":id/targets")
   async targets(@Param("id") id: string): Promise<{ targets: readonly CatalogTarget[] }> {
     return { targets: await this.jobs.catalogOf(id).targets() };
+  }
+
+  /** Each of the project's configured devices, with its real, current connectivity. */
+  @Get(":id/devices")
+  async devices(@Param("id") id: string): Promise<{ devices: readonly DeviceStatus[] }> {
+    return { devices: await this.jobs.devicesOf(id) };
   }
 }

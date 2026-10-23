@@ -86,6 +86,19 @@ export interface ProjectCatalog {
   targets(): Promise<readonly CatalogTarget[]>;
 }
 
+/** adb's own three states, as the catalog's `devices --json` contract reports them. */
+export interface DeviceStatus {
+  readonly name: string;
+  readonly state: "connected" | "disconnected" | "unauthorized";
+}
+
+/** Lets a client see what the project's physical devices look like right now, before queueing a job. */
+export interface DeviceChecker {
+  list(): Promise<readonly DeviceStatus[]>;
+}
+
+export type Readiness = { readonly ready: true } | { readonly ready: false; readonly reason: string };
+
 export interface ProjectAdapter {
   readonly id: string;
   /** Resources every job of this project needs exclusively (e.g. `devices`). */
@@ -99,6 +112,15 @@ export interface ProjectAdapter {
    * future adapter that cannot offer it (e.g. an early Cucumber adapter); every adapter has it today.
    */
   readonly browsable?: ProjectCatalog;
+  /** Lets a client see the project's device status. Optional: only a project with physical devices has one. */
+  readonly devices?: DeviceChecker;
+  /**
+   * Whether this job's resources are actually usable right now, beyond the scheduler's own lock
+   * bookkeeping (a free `devices` lock only means no other job is running — not that the devices this
+   * particular job needs are connected). Optional: an adapter with nothing further to check (or a job
+   * kind that does not have per-job resource needs) is always ready, the scheduler's default.
+   */
+  canStart?(job: Job): Promise<Readiness>;
   /**
    * The project's own check of a request, with a strict schema (unknown keys rejected). Returns the
    * parameters to store. Throws InvalidJobRequestError.
@@ -110,6 +132,13 @@ export class CatalogUnsupportedError extends Error {
   constructor(readonly project: string) {
     super(`Project "${project}" has no browsable catalog`);
     this.name = "CatalogUnsupportedError";
+  }
+}
+
+export class ProjectHasNoDevicesError extends Error {
+  constructor(readonly project: string) {
+    super(`Project "${project}" has no devices to report on`);
+    this.name = "ProjectHasNoDevicesError";
   }
 }
 

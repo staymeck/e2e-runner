@@ -18,30 +18,34 @@ export class JobsController {
 
   @Post()
   async submit(@Body() body: unknown): Promise<JobView> {
-    return toJobView(await this.jobs.submit(parseSubmit(body)));
+    const job = await this.jobs.submit(parseSubmit(body));
+    return toJobView(job, this.jobs.waitingReasonFor(job.id));
   }
 
   @Get()
   list(@Query() query: Record<string, unknown>): { jobs: JobView[]; nextCursor: number | null } {
     const { filter, page } = parseList(query);
     const result = this.jobs.list(filter, page);
-    return { jobs: result.jobs.map(toJobView), nextCursor: result.nextCursor };
+    return { jobs: result.jobs.map((job) => toJobView(job, this.jobs.waitingReasonFor(job.id))), nextCursor: result.nextCursor };
   }
 
   @Get(":id")
   get(@Param("id") id: string): JobView {
-    return toJobView(this.jobs.get(id));
+    const job = this.jobs.get(id);
+    return toJobView(job, this.jobs.waitingReasonFor(job.id));
   }
 
   @Post(":id/cancel")
   @HttpCode(200)
   async cancel(@Param("id") id: string): Promise<JobView> {
-    return toJobView(await this.jobs.cancel(id));
+    const job = await this.jobs.cancel(id);
+    return toJobView(job, this.jobs.waitingReasonFor(job.id));
   }
 
   @Post(":id/retry")
   retry(@Param("id") id: string): JobView {
-    return toJobView(this.jobs.retry(id));
+    const job = this.jobs.retry(id);
+    return toJobView(job, this.jobs.waitingReasonFor(job.id));
   }
 
   @Get(":id/log")

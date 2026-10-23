@@ -16,6 +16,9 @@ export function MobileLayout() {
         <NavLink to="/mobile/reportes" className="navlink">
           Reportes
         </NavLink>
+        <NavLink to="/mobile/dispositivos" className="navlink">
+          Dispositivos
+        </NavLink>
         <span className="navbar-spacer" />
         {state.status === "authenticated" && <span className="muted">{state.username}</span>}
         <button className="btn" onClick={() => logout()}>

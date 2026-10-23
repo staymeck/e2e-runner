@@ -4,6 +4,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/LoginPage";
+import { DevicesPage } from "./pages/mobile/DevicesPage";
 import { EscenariosPage } from "./pages/mobile/EscenariosPage";
 import { JobLogPage } from "./pages/mobile/JobLogPage";
 import { JobsPage } from "./pages/mobile/JobsPage";
@@ -39,6 +40,7 @@ export function App() {
             <Route path="jobs" element={<JobsPage />} />
             <Route path="jobs/:jobId" element={<JobLogPage />} />
             <Route path="reportes" element={<ReportesPage />} />
+            <Route path="dispositivos" element={<DevicesPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
