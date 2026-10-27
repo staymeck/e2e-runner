@@ -5,6 +5,7 @@ import type { JobLog } from "../../core/job-log";
 import type { ProcessHost, RunningProcess } from "../../core/process-host";
 import type { BakeContainers } from "./bake-containers";
 import type { CatalogWorkspaces, Workspace } from "./catalog-workspaces";
+import type { ApkStatusLister } from "./apk-status-checker";
 import type { DeviceLister } from "./device-checker";
 import { JOB_APK_PLAN_DIR, detoxCliArgs, namesAScenario, planDetoxPhases } from "./detox-request";
 import { deriveOutcome, findRunReport, readRunSummary } from "./run-report";
@@ -25,6 +26,12 @@ export interface DetoxExecutorDeps {
    * reports "zero devices" — that was tried and reverted, see `createDetoxAdapter`'s own comment).
    */
   readonly deviceLister?: DeviceLister;
+  /**
+   * Not read by the executor itself — only by `createDetoxAdapter`, for `apkStatus`/`checkReady`
+   * (STA-48). Optional, same reasoning as `deviceLister`: omitting it means the resulting adapter has
+   * no `apkStatus`/`checkReady` at all, not a default that silently reports "nothing is ready".
+   */
+  readonly apkStatusChecker?: ApkStatusLister;
   readonly containers: BakeContainers;
   readonly log: JobLog;
   /** The environment `perfect-qa` runs in (the service's, minus its own settings). Read at each start. */

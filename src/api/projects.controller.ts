@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Inject, Param, Post } from "@nestjs/common";
 import { Roles } from "../auth/access-control";
-import type { CatalogTarget, DeviceStatus } from "../core/adapter";
+import type { ApkScenarioStatus, CatalogTarget, DeviceStatus } from "../core/adapter";
 import { JOB_SERVICE, type JobService } from "../core/job-service";
 import { parseBrowse } from "./request-parsing";
 
@@ -59,5 +59,11 @@ export class ProjectsController {
   @Get(":id/devices")
   async devices(@Param("id") id: string): Promise<{ devices: readonly DeviceStatus[] }> {
     return { devices: await this.jobs.devicesOf(id) };
+  }
+
+  /** Whether a scenario's apps are actually built right now, before queueing a `run`. */
+  @Get(":id/targets/:scenario/apk-status")
+  async apkStatus(@Param("id") id: string, @Param("scenario") scenario: string): Promise<{ status: ApkScenarioStatus | null }> {
+    return { status: await this.jobs.apkStatusOf(id, scenario) };
   }
 }

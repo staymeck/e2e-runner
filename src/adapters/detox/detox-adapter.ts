@@ -1,6 +1,17 @@
-import type { CatalogTarget, DeviceChecker, DeviceStatus, JobRequestInput, ProjectAdapter, ProjectCatalog, Readiness } from "../../core/adapter";
+import type {
+  ApkScenarioStatus,
+  ApkStatusChecker,
+  CatalogTarget,
+  DeviceChecker,
+  DeviceStatus,
+  JobRequestInput,
+  ProjectAdapter,
+  ProjectCatalog,
+  Readiness,
+} from "../../core/adapter";
 import type { Job } from "../../core/job";
-import { CatalogReadError, InvalidJobRequestError } from "../../core/job-request";
+import { CatalogReadError, InvalidJobRequestError, ScenarioNotReadyError } from "../../core/job-request";
+import { ApkStatusReadError, ApkStatusUnsupportedError, type ApkStatusLister } from "./apk-status-checker";
 import { CatalogError, type CatalogWorkspaces, type Workspace } from "./catalog-workspaces";
 import { DeviceListingError, DevicesUnsupportedError, type DeviceLister } from "./device-checker";
 import { DETOX_KINDS, namesAScenario, validateDetoxRequest } from "./detox-request";
@@ -70,6 +81,40 @@ function devicesChecker(catalog: CatalogWorkspaces, deviceLister: DeviceLister):
   };
 }
 
+/** Holds the same browse lock `devicesChecker` does — see its own comment for why. */
+function apkStatusChecker(catalog: CatalogWorkspaces, checker: ApkStatusLister): ApkStatusChecker {
+  return {
+    async status(scenarioId: string): Promise<ApkScenarioStatus | null> {
+      try {
+        return await catalog.withBrowseLock((dir) => checker.status(dir, scenarioId));
+      } catch (error) {
+        if (error instanceof ApkStatusUnsupportedError || error instanceof ApkStatusReadError) throw new CatalogReadError(error.message);
+        throw error;
+      }
+    },
+  };
+}
+
+/**
+ * Only Detox's "run" assumes its scenario is already built — "build"/"pipeline" are what make it so,
+ * so this never rejects those (checked by `kind`, not `namesAScenario`, which also covers a specific
+ * "build"). Fails open on any read problem (an old catalog branch, a missing orchestrator, an unknown
+ * scenario here): this exists to save a wasted device slot on the common case, not to replace the
+ * executor's own existence/shape check at the job's actual pinned commit, which still runs regardless.
+ */
+async function detoxCheckReady(request: JobRequestInput, catalog: CatalogWorkspaces, checker: ApkStatusLister): Promise<void> {
+  if (request.kind !== "run") return;
+  let status: ApkScenarioStatus | null;
+  try {
+    status = await catalog.withBrowseLock((dir) => checker.status(dir, request.target));
+  } catch {
+    return;
+  }
+  if (!status) return;
+  const notReady = status.apps.filter((a) => !a.ready).map((a) => a.app);
+  if (notReady.length > 0) throw new ScenarioNotReadyError(request.target, notReady);
+}
+
 const CONNECTED: DeviceStatus["state"] = "connected";
 
 /** `batch` always needs exactly one device slot; `step` needs one per app it creates (never fewer than one). */
@@ -114,6 +159,7 @@ async function detoxCanStart(job: Job, catalog: CatalogWorkspaces, lister: Scena
  */
 export function createDetoxAdapter(deps: DetoxExecutorDeps, id: string = DETOX_PROJECT_ID): DetoxAdapter {
   const deviceLister = deps.deviceLister;
+  const apkChecker = deps.apkStatusChecker;
   return {
     id,
     locks: DETOX_LOCKS,
@@ -125,6 +171,12 @@ export function createDetoxAdapter(deps: DetoxExecutorDeps, id: string = DETOX_P
       ? {
           devices: devicesChecker(deps.catalog, deviceLister),
           canStart: (job: Job) => detoxCanStart(job, deps.catalog, deps.lister, deviceLister),
+        }
+      : {}),
+    ...(apkChecker
+      ? {
+          apkStatus: apkStatusChecker(deps.catalog, apkChecker),
+          checkReady: (request: JobRequestInput) => detoxCheckReady(request, deps.catalog, apkChecker),
         }
       : {}),
     executor: new DetoxExecutor(deps),
