@@ -33,6 +33,11 @@ lista todos los problemas a la vez.
 | `E2E_SERVICE_LOG_LEVEL` | no | Nivel de pino (`info`) |
 | `E2E_DETOX_RUNNER_DIR` | con un proyecto `detox` | Carpeta donde corren los jobs |
 | `E2E_DETOX_INFO_DIR` | con un proyecto `detox` | Carpeta para consultar ramas y escenarios |
+| `E2E_WEB_USERS` | no | Usuarios fijos de la web: `usuario:password:rol,...` (roles: `e2e-mobile`, `e2e-cypress`, `admin`). Vacío = nadie puede loguearse en la web |
+| `E2E_WEBHOOK_SUBSCRIBERS` | no | Suscriptores de webhooks firmados: `host:secret[:secretAnterior],...`. Vacío = webhooks deshabilitados |
+
+Ver [`.env.example`](.env.example) para una plantilla lista para copiar (no se carga sola — `e2e-runner` lee `process.env`
+directo, sin `dotenv`; hay que cargarla a mano, por ejemplo `set -a; source .env; set +a`).
 
 Las dos carpetas de Detox deben existir, ser rutas absolutas y **distintas** (no la misma, ni enlaces a la misma, ni una
 dentro de la otra). `E2E_SERVICE_DATA_DIR` tampoco puede estar dentro de ninguna de las dos, ni contenerlas: un `checkout`
@@ -50,7 +55,8 @@ git -C e2e-detox-runner worktree add --detach ../e2e-detox-info origin/iteration
 
 Con un par de `git clone` separados el servicio se niega a arrancar. La llave SSH de despliegue debe ser de solo
 lectura; el servicio nunca hace `push`. Git no pregunta nunca por contraseñas (`GIT_TERMINAL_PROMPT=0`, ssh en modo
-`BatchMode`).
+`BatchMode`) salvo que la variable genérica de git `GIT_SSH_COMMAND` ya esté puesta en el entorno, en cuyo caso se
+respeta tal cual.
 
 En el JSON, `repo` acepta `ssh://`, `https://`, `file://` o `usuario@host:ruta`; las ramas y patrones se validan como
 nombres de rama de git, y una clave desconocida en un proyecto se rechaza.
