@@ -2,8 +2,10 @@ import { useCallback, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, errorMessage } from "../../api/client";
 import { DETOX_PROJECT, type ApkScenarioStatus, type JobView } from "../../api/types";
+import { LogView } from "../../components/LogView";
 import { StatusBadge } from "../../components/StatusBadge";
 import { usePolling } from "../../usePolling";
+import { useJobLog } from "../../useJobLog";
 
 const POLL_MS = 3000;
 const ACTIVE_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -61,6 +63,13 @@ export function ScenarioDetailPage() {
   }, [scenarioId]);
 
   usePolling(load, POLL_MS);
+
+  // jobs.list orders newest-first (by seq), so jobs[0] is always this scenario's most recent job —
+  // whichever is currently running, or the last one that finished if none is. The hook's own effect
+  // reacts to this id changing (a new job appearing, or a running one finishing and a newer one
+  // starting), so switching which job it watches is automatic, not something this page manages itself.
+  const lastJobId = jobs?.[0]?.id;
+  const { job: lastJob, log: lastJobLog, live: lastJobLive, reconnect: reconnectLastJobLog } = useJobLog(lastJobId);
 
   if (!scenarioId) return null;
 
@@ -172,6 +181,23 @@ export function ScenarioDetailPage() {
         <p className="muted">
           No se puede ejecutar: falta compilar {notReadyApps.join(", ")}.
         </p>
+      )}
+
+      {lastJobId && (
+        <>
+          <div className="panel-header">
+            <h3>Log del último job</h3>
+            {lastJob && <StatusBadge status={lastJob.status} />}
+            {lastJobLive && <span className="badge badge-info">en vivo</span>}
+            <Link to={`/mobile/jobs/${encodeURIComponent(lastJobId)}`}>Ver en Jobs</Link>
+          </div>
+          {!lastJobLive && lastJob && (lastJob.status === "queued" || lastJob.status === "running") && (
+            <button className="btn btn-small" onClick={reconnectLastJobLog}>
+              Reconectar
+            </button>
+          )}
+          <LogView text={lastJobLog} />
+        </>
       )}
 
       <h3>Jobs de este escenario</h3>
