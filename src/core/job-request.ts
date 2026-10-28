@@ -35,6 +35,17 @@ export class CatalogReadError extends Error {
   }
 }
 
+/** The scenario named by the request exists, but at least one of its apps is not built yet. */
+export class ScenarioNotReadyError extends Error {
+  constructor(
+    readonly target: string,
+    readonly notReady: readonly string[],
+  ) {
+    super(`Scenario "${target}" is not ready to run: ${notReady.join(", ")} not built`);
+    this.name = "ScenarioNotReadyError";
+  }
+}
+
 export const COMMIT_SHA = /^[0-9a-f]{40}$/;
 /** Scenario and phase names as the catalog writes them; the adapter checks the exact set. */
 export const TARGET_NAME = /^[A-Za-z0-9_][A-Za-z0-9._:/@-]{0,199}$/;

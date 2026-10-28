@@ -1,4 +1,13 @@
-import { CatalogUnsupportedError, ProjectHasNoDevicesError, UnknownProjectError, type AdapterLookup, type DeviceStatus, type ProjectCatalog } from "./adapter";
+import {
+  CatalogUnsupportedError,
+  ProjectHasNoApkStatusError,
+  ProjectHasNoDevicesError,
+  UnknownProjectError,
+  type AdapterLookup,
+  type ApkScenarioStatus,
+  type DeviceStatus,
+  type ProjectCatalog,
+} from "./adapter";
 import { isBranchAllowed } from "./branch-pattern";
 import { JobNotFoundError, type Job, type JobFilter, type JobList, type JobPage } from "./job";
 import type { JobEnqueuer } from "./job-enqueuer";
@@ -66,6 +75,7 @@ export class JobService {
     }
     if (!TARGET_NAME.test(input.target) || hasParentSegment(input.target)) throw new InvalidJobRequestError("target is not a valid scenario name");
     const params = adapter.validateRequest({ kind, target: input.target, params: input.params ?? null });
+    if (adapter.checkReady) await adapter.checkReady({ kind, target: input.target, params });
 
     const sha = await adapter.refs.pin(ref);
     try {
@@ -98,9 +108,17 @@ export class JobService {
    * finished job may be retried; `get` gives the clearer JobNotFoundError for a missing one, and the
    * store's own `assertRetryable` (shared with every other caller of `create`) is the single place that
    * enforces "finished", so that rule can never drift between the two.
+   *
+   * Does ask `checkReady` again, unlike `isBranchAllowed`/`validateRequest`/`kinds` (never re-checked:
+   * see the design doc for why "same exact job" means those stay frozen at the original's values).
+   * `checkReady` is not about whether the original request was valid — it is about today's physical
+   * state (an app's APK on disk), the same kind of thing `canStart` already re-checks at start time for
+   * any retried job. Nothing else re-checks it for a retry otherwise: `canStart` only gates *devices*.
    */
-  retry(id: string): Job {
+  async retry(id: string): Promise<Job> {
     const original = this.get(id);
+    const adapter = this.adapters.get(original.project);
+    if (adapter.checkReady) await adapter.checkReady({ kind: original.kind, target: original.target, params: original.params });
     return this.enqueuer.enqueue({
       project: original.project,
       kind: original.kind,
@@ -135,5 +153,13 @@ export class JobService {
   /** See `JobCanceller.waitingReasonFor`. */
   waitingReasonFor(id: string): string | undefined {
     return this.canceller.waitingReasonFor(id);
+  }
+
+  /** The project's APK build status for one scenario. Throws UnknownProjectError or ProjectHasNoApkStatusError. */
+  async apkStatusOf(id: string, scenarioId: string): Promise<ApkScenarioStatus | null> {
+    if (!this.policies.has(id)) throw new UnknownProjectError(id);
+    const apkStatus = this.adapters.get(id).apkStatus;
+    if (!apkStatus) throw new ProjectHasNoApkStatusError(id);
+    return apkStatus.status(scenarioId);
   }
 }

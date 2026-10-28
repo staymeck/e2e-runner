@@ -6,7 +6,7 @@ import { WebSocket } from "ws";
 import { createApp } from "../src/app";
 import type { ProjectCatalog } from "../src/core/adapter";
 import type { ServiceConfig } from "../src/config/service-config";
-import { CatalogReadError } from "../src/core/job-request";
+import { CatalogReadError, ScenarioNotReadyError } from "../src/core/job-request";
 import { FileJobLog } from "../src/infra/file-job-log";
 import { FakeProjectCatalog, FakeRefs, OK, fakeAdapter, type FakeAdapter } from "./helpers/fake-adapter";
 import { buildService } from "./helpers/service";
@@ -225,6 +225,41 @@ describe("GET /v1/projects/:id/devices", () => {
   });
 });
 
+describe("GET /v1/projects/:id/targets/:scenario/apk-status", () => {
+  it("answers 404 for an unknown project, before touching any adapter", async () => {
+    await withApi(async (api) => {
+      const response = await api.call("GET", "/v1/projects/ghost/targets/login/apk-status");
+      assert.equal(response.status, 404);
+      assert.equal(((await response.json()) as { error: string }).error, "unknown_project");
+    });
+  });
+
+  it("answers 404 for a configured project whose adapter has no APK status to report", async () => {
+    await withApi(async (api) => {
+      const response = await api.call("GET", "/v1/projects/detox/targets/login/apk-status");
+      assert.equal(response.status, 404);
+      assert.equal(((await response.json()) as { error: string }).error, "no_apk_status");
+    }, fakeAdapter("detox", ["devices"])); // no `apkStatus` attached
+  });
+
+  it("reports the real build status a project's apk-status checker returns", async () => {
+    const status = { scenarioId: "login", kind: "step", apps: [{ app: "kpmake", branch: "main", ready: true }, { app: "kpfry", branch: "fb-foo", ready: false }] };
+    const apkStatus = { status: async () => status };
+    await withApi(async (api) => {
+      const body = await api.json<{ status: typeof status }>(api.call("GET", "/v1/projects/detox/targets/login/apk-status"));
+      assert.deepEqual(body.status, status);
+    }, { ...fakeAdapter("detox", ["devices"]), apkStatus });
+  });
+
+  it("answers { status: null } for a scenario the checker does not know about", async () => {
+    const apkStatus = { status: async () => null };
+    await withApi(async (api) => {
+      const body = await api.json<{ status: unknown }>(api.call("GET", "/v1/projects/detox/targets/ghost/apk-status"));
+      assert.equal(body.status, null);
+    }, { ...fakeAdapter("detox", ["devices"]), apkStatus });
+  });
+});
+
 describe("POST /v1/jobs", () => {
   it("queues a job and shows it without server internals", async () => {
     await withApi(async (api) => {
@@ -242,6 +277,23 @@ describe("POST /v1/jobs", () => {
       const job = await api.json<JobBody>(api.submit({ project: "detox", target: "t" }));
       assert.deepEqual([job.ref, job.kind], ["iteration_1", "run"]);
     });
+  });
+
+  it("answers 409 scenario_not_ready, creating nothing, when the adapter's checkReady rejects", async () => {
+    const adapter = {
+      ...fakeAdapter("detox", ["devices"]),
+      async checkReady(): Promise<void> {
+        throw new ScenarioNotReadyError("t", ["kpmake"]);
+      },
+    };
+    await withApi(async (api) => {
+      const response = await api.submit({ project: "detox", target: "t" });
+      assert.equal(response.status, 409);
+      const body = (await response.json()) as { error: string; message: string };
+      assert.equal(body.error, "scenario_not_ready");
+      assert.match(body.message, /kpmake/);
+      assert.deepEqual((await api.json<{ jobs: unknown[] }>(api.call("GET", "/v1/jobs"))).jobs, []);
+    }, adapter);
   });
 
   it("answers 400 to a malformed request, naming the problem and creating nothing", async () => {

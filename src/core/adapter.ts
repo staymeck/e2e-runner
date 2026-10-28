@@ -99,6 +99,27 @@ export interface DeviceChecker {
 
 export type Readiness = { readonly ready: true } | { readonly ready: false; readonly reason: string };
 
+/** One APK slot in a scenario's plan, with whether it is actually built right now. */
+export interface ApkRowStatus {
+  readonly app: string;
+  readonly branch: string;
+  readonly ready: boolean;
+  /** Batch scenarios only, carried through from the plan row when present. */
+  readonly customId?: string;
+}
+
+export interface ApkScenarioStatus {
+  readonly scenarioId: string;
+  readonly kind: string;
+  readonly apps: readonly ApkRowStatus[];
+}
+
+/** Lets a client see, before queueing a `run`, whether a scenario's apps are actually built. */
+export interface ApkStatusChecker {
+  /** `null` when the scenario does not exist in the catalog at all. */
+  status(scenarioId: string): Promise<ApkScenarioStatus | null>;
+}
+
 export interface ProjectAdapter {
   readonly id: string;
   /** Resources every job of this project needs exclusively (e.g. `devices`). */
@@ -121,6 +142,15 @@ export interface ProjectAdapter {
    * kind that does not have per-job resource needs) is always ready, the scheduler's default.
    */
   canStart?(job: Job): Promise<Readiness>;
+  /** Lets a client see the project's APK build status for one scenario. Optional: only a project whose jobs assume a prior build needs this. */
+  readonly apkStatus?: ApkStatusChecker;
+  /**
+   * Throws if this request should not be queued because what it names is not ready yet (e.g. Detox's
+   * "run": the scenario's apps must already be built — "build"/"pipeline" are what make them ready, so
+   * this never rejects those). Optional: an adapter with nothing to check here, or a job kind that
+   * never has this requirement, accepts every request at once (the scheduler's default).
+   */
+  checkReady?(request: JobRequestInput): Promise<void>;
   /**
    * The project's own check of a request, with a strict schema (unknown keys rejected). Returns the
    * parameters to store. Throws InvalidJobRequestError.
@@ -139,6 +169,13 @@ export class ProjectHasNoDevicesError extends Error {
   constructor(readonly project: string) {
     super(`Project "${project}" has no devices to report on`);
     this.name = "ProjectHasNoDevicesError";
+  }
+}
+
+export class ProjectHasNoApkStatusError extends Error {
+  constructor(readonly project: string) {
+    super(`Project "${project}" has no APK build status to report on`);
+    this.name = "ProjectHasNoApkStatusError";
   }
 }
 

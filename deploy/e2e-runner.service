@@ -1,0 +1,25 @@
+# systemd unit for a Linux lab host.
+#
+# Install:
+#   sudo cp deploy/e2e-runner.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   # Edit WorkingDirectory/ExecStart paths and User/Group below, then:
+#   sudo systemctl enable --now e2e-runner
+#   journalctl -u e2e-runner -f
+
+[Unit]
+Description=Formosre e2e-runner service (Detox job queue)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=lab
+Group=lab
+WorkingDirectory=/opt/e2e/e2e-runner
+ExecStart=/bin/bash /opt/e2e/e2e-runner/deploy/start-e2e-runner.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

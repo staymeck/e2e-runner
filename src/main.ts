@@ -4,6 +4,7 @@ import { createDetoxCatalog } from "./adapters/detox/create-catalog";
 import { DETOX_ADAPTER } from "./adapters/detox/detox-config";
 import { createDetoxAdapter } from "./adapters/detox/detox-adapter";
 import { NpmInstaller } from "./adapters/detox/dependency-installer";
+import { CliApkStatusChecker } from "./adapters/detox/apk-status-checker";
 import { CliDeviceChecker } from "./adapters/detox/device-checker";
 import { CliScenarioLister } from "./adapters/detox/scenario-lister";
 import { createApp } from "./app";
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
           host: new NodeProcessHost(runner),
           lister: new CliScenarioLister(runner, childEnvironment, process.execPath, SERVICE_SECRET_NAMES),
           deviceLister: new CliDeviceChecker(runner, childEnvironment, process.execPath, SERVICE_SECRET_NAMES),
+          apkStatusChecker: new CliApkStatusChecker(runner, childEnvironment, process.execPath, SERVICE_SECRET_NAMES),
           containers: new DockerBakeContainers(runner, logger),
           log: jobLog,
           environment: childEnvironment,

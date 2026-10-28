@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd unit for a macOS lab host (where the USB devices and adb actually are).
+
+  Always goes through start-e2e-runner.sh: launchd does NOT source ~/.zshrc, so nvm/ANDROID_HOME
+  must be set by that script, not assumed to already be on PATH here.
+
+  Install:
+    mkdir -p ~/Library/Logs/e2e-runner
+    # Edit WorkingDirectory below to this repo's real path on the host, then:
+    cp deploy/com.perfect.e2e-runner.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.perfect.e2e-runner.plist
+    # Logs: tail -f ~/Library/Logs/e2e-runner/*.log
+    # Restart after a config/code change: launchctl kickstart -k gui/$(id -u)/com.perfect.e2e-runner
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.perfect.e2e-runner</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/mac/e2e-runner</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>/Users/mac/e2e-runner/deploy/start-e2e-runner.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>HOME</key>
+      <string>/Users/mac</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/mac/Library/Logs/e2e-runner/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mac/Library/Logs/e2e-runner/stderr.log</string>
+  </dict>
+</plist>

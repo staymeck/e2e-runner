@@ -1,10 +1,10 @@
 import { STATUS_CODES } from "node:http";
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Inject } from "@nestjs/common";
 import type { Response } from "express";
-import { CatalogUnsupportedError, ProjectHasNoDevicesError, UnknownProjectError } from "../core/adapter";
+import { CatalogUnsupportedError, ProjectHasNoApkStatusError, ProjectHasNoDevicesError, UnknownProjectError } from "../core/adapter";
 import { DIAGNOSTICS, type Diagnostics } from "../core/diagnostics";
 import { InvalidTransitionError, JobAlreadyFinishedError, JobNotFoundError, RetryNotAllowedError } from "../core/job";
-import { CatalogReadError, InvalidJobRequestError, RefNotAllowedError, RefNotFoundError } from "../core/job-request";
+import { CatalogReadError, InvalidJobRequestError, RefNotAllowedError, RefNotFoundError, ScenarioNotReadyError } from "../core/job-request";
 
 interface Mapping {
   readonly type: new (...args: never[]) => Error;
@@ -19,12 +19,14 @@ const MAPPINGS: readonly Mapping[] = [
   { type: UnknownProjectError, status: HttpStatus.NOT_FOUND, code: "unknown_project" },
   { type: CatalogUnsupportedError, status: HttpStatus.NOT_FOUND, code: "catalog_unsupported" },
   { type: ProjectHasNoDevicesError, status: HttpStatus.NOT_FOUND, code: "no_devices" },
+  { type: ProjectHasNoApkStatusError, status: HttpStatus.NOT_FOUND, code: "no_apk_status" },
   { type: JobNotFoundError, status: HttpStatus.NOT_FOUND, code: "job_not_found" },
   { type: RefNotFoundError, status: HttpStatus.UNPROCESSABLE_ENTITY, code: "ref_not_found" },
   { type: CatalogReadError, status: HttpStatus.UNPROCESSABLE_ENTITY, code: "catalog_unavailable" },
   { type: JobAlreadyFinishedError, status: HttpStatus.CONFLICT, code: "job_finished" },
   { type: RetryNotAllowedError, status: HttpStatus.CONFLICT, code: "retry_not_allowed" },
   { type: InvalidTransitionError, status: HttpStatus.CONFLICT, code: "invalid_transition" },
+  { type: ScenarioNotReadyError, status: HttpStatus.CONFLICT, code: "scenario_not_ready" },
   // InvalidDetailsError is deliberately absent: it means the service itself passed bad data, a bug to log (500).
 ];
 

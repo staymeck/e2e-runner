@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { DeviceStatus } from "../src/core/adapter";
+import type { ApkScenarioStatus, DeviceStatus } from "../src/core/adapter";
 import type { Job } from "../src/core/job";
+import { ApkStatusReadError, ApkStatusUnsupportedError, type ApkStatusLister } from "../src/adapters/detox/apk-status-checker";
 import { CatalogError, type CatalogWorkspaces } from "../src/adapters/detox/catalog-workspaces";
 import { DeviceListingError, DevicesUnsupportedError, type DeviceLister } from "../src/adapters/detox/device-checker";
 import { createDetoxAdapter, DETOX_LOCKS, DETOX_PROJECT_ID } from "../src/adapters/detox/detox-adapter";
 import { ScenarioListingError, ScenariosUnsupportedError, type ScenarioInfo, type ScenarioLister } from "../src/adapters/detox/scenario-lister";
-import { CatalogReadError, InvalidJobRequestError } from "../src/core/job-request";
+import { CatalogReadError, InvalidJobRequestError, ScenarioNotReadyError } from "../src/core/job-request";
 import { FakeCatalog } from "./helpers/fake-orchestrator";
 
 const scenario = (id: string, overrides: Partial<ScenarioInfo> = {}): ScenarioInfo => ({ id, kind: "step", title: null, description: null, apps: [], appRefs: [], ...overrides });
@@ -36,6 +37,17 @@ class MixedDeviceLister implements DeviceLister {
   }
 }
 
+class FakeApkStatusChecker implements ApkStatusLister {
+  constructor(private readonly byScenario: Record<string, ApkScenarioStatus | null> = {}) {}
+  async status(_dir: string, scenarioId: string): Promise<ApkScenarioStatus | null> {
+    return Object.hasOwn(this.byScenario, scenarioId) ? this.byScenario[scenarioId]! : null;
+  }
+}
+
+function apkRow(app: string, ready: boolean, branch = "main"): { app: string; branch: string; ready: boolean } {
+  return { app, branch, ready };
+}
+
 function fakeJob(overrides: Partial<Job> = {}): Job {
   return {
     seq: 1,
@@ -63,12 +75,13 @@ function fakeJob(overrides: Partial<Job> = {}): Job {
   };
 }
 
-function adapter(catalog: CatalogWorkspaces, lister: ScenarioLister, deviceLister?: DeviceLister) {
+function adapter(catalog: CatalogWorkspaces, lister: ScenarioLister, deviceLister?: DeviceLister, apkStatusChecker?: ApkStatusLister) {
   return createDetoxAdapter({
     catalog,
     host: { start: () => { throw new Error("not used"); }, kill: () => undefined, commandLine: async () => undefined },
     lister,
     ...(deviceLister ? { deviceLister } : {}),
+    ...(apkStatusChecker ? { apkStatusChecker } : {}),
     containers: { stopForJob: async () => [] },
     log: { append: () => undefined },
     environment: () => ({}),
@@ -248,6 +261,14 @@ describe("createDetoxAdapter: devices and canStart (STA-46)", () => {
     assert.deepEqual(await a.canStart!(fakeJob({ kind: "pipeline", target: "all" })), { ready: true });
   });
 
+  it("is always ready for a build of one specific scenario too — compiling never touches a device (STA-49)", async () => {
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const lister = new FakeLister({ "/x": [scenario("login", { kind: "step", apps: ["kpmake", "kpfry"] })] });
+    const a = adapter(catalog, lister, new FakeDeviceLister(0));
+    await a.browsable!.browse("main");
+    assert.deepEqual(await a.canStart!(fakeJob({ kind: "build", target: "login" })), { ready: true });
+  });
+
   it("is ready when a step scenario's own app count is met by connected devices", async () => {
     const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
     const lister = new FakeLister({ "/x": [scenario("login", { kind: "step", apps: ["kpmake", "kpfry"] })] });
@@ -305,5 +326,87 @@ describe("createDetoxAdapter: devices and canStart (STA-46)", () => {
     const a = adapter(catalog, new FakeLister({ "/x": [] }), new FakeDeviceLister(0));
     await a.browsable!.browse("main");
     assert.deepEqual(await a.canStart!(fakeJob({ target: "ghost" })), { ready: true });
+  });
+});
+
+describe("createDetoxAdapter: apkStatus and checkReady (STA-48)", () => {
+  it("has neither apkStatus nor checkReady when no apkStatusChecker was given — opting out entirely", () => {
+    const a = adapter(new FakeCatalog("/x"), new FakeLister());
+    assert.equal(a.apkStatus, undefined);
+    assert.equal(a.checkReady, undefined);
+  });
+
+  it("apkStatus.status() reads whatever the checker reports for the browsing folder", async () => {
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const checker = new FakeApkStatusChecker({ login: { scenarioId: "login", kind: "step", apps: [apkRow("kpmake", true)] } });
+    const a = adapter(catalog, new FakeLister(), undefined, checker);
+    assert.deepEqual(await a.apkStatus!.status("login"), { scenarioId: "login", kind: "step", apps: [apkRow("kpmake", true)] });
+  });
+
+  it("apkStatus.status() turns an old branch (no apk-status command) into CatalogReadError, same as devices does", async () => {
+    const catalog = new FakeCatalog("/x");
+    const tooOld: ApkStatusLister = {
+      status: async () => {
+        throw new ApkStatusUnsupportedError();
+      },
+    };
+    const a = adapter(catalog, new FakeLister(), undefined, tooOld);
+    await assert.rejects(a.apkStatus!.status("login"), CatalogReadError);
+  });
+
+  it("apkStatus.status() turns a malformed or contract-version-mismatched listing into CatalogReadError too", async () => {
+    const catalog = new FakeCatalog("/x");
+    const broken: ApkStatusLister = {
+      status: async () => {
+        throw new ApkStatusReadError("Unsupported apk-status contract version: 2 (this service reads 1)");
+      },
+    };
+    const a = adapter(catalog, new FakeLister(), undefined, broken);
+    await assert.rejects(a.apkStatus!.status("login"), CatalogReadError);
+  });
+
+  it("checkReady never rejects a build or a pipeline — only \"run\" assumes its scenario is already built", async () => {
+    const catalog = new FakeCatalog("/x");
+    const checker = new FakeApkStatusChecker({ login: { scenarioId: "login", kind: "step", apps: [apkRow("kpmake", false)] } });
+    const a = adapter(catalog, new FakeLister(), undefined, checker);
+    await a.checkReady!({ kind: "build", target: "login", params: null });
+    await a.checkReady!({ kind: "pipeline", target: "all", params: null });
+    // Neither call above threw; that is the assertion.
+  });
+
+  it("checkReady resolves for a \"run\" whose scenario has every app ready", async () => {
+    const catalog = new FakeCatalog("/x");
+    const checker = new FakeApkStatusChecker({ login: { scenarioId: "login", kind: "step", apps: [apkRow("kpmake", true), apkRow("kpfry", true)] } });
+    const a = adapter(catalog, new FakeLister(), undefined, checker);
+    await a.checkReady!({ kind: "run", target: "login", params: null });
+  });
+
+  it("checkReady rejects a \"run\" whose scenario has an app that is not built, naming it", async () => {
+    const catalog = new FakeCatalog("/x");
+    const checker = new FakeApkStatusChecker({ login: { scenarioId: "login", kind: "step", apps: [apkRow("kpmake", true), apkRow("kpfry", false)] } });
+    const a = adapter(catalog, new FakeLister(), undefined, checker);
+    await assert.rejects(a.checkReady!({ kind: "run", target: "login", params: null }), (error: unknown) => {
+      assert.ok(error instanceof ScenarioNotReadyError);
+      assert.deepEqual(error.notReady, ["kpfry"]);
+      return true;
+    });
+  });
+
+  it("checkReady fails open when the status read itself fails (an old branch, a missing orchestrator)", async () => {
+    const catalog = new FakeCatalog("/x");
+    const broken: ApkStatusLister = {
+      status: async () => {
+        throw new ApkStatusUnsupportedError();
+      },
+    };
+    const a = adapter(catalog, new FakeLister(), undefined, broken);
+    await a.checkReady!({ kind: "run", target: "login", params: null });
+  });
+
+  it("checkReady fails open when the scenario is unknown to apk-status — the executor's own check at the real commit is what matters", async () => {
+    const catalog = new FakeCatalog("/x");
+    const checker = new FakeApkStatusChecker({});
+    const a = adapter(catalog, new FakeLister(), undefined, checker);
+    await a.checkReady!({ kind: "run", target: "ghost", params: null });
   });
 });

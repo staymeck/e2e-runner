@@ -59,6 +59,21 @@ export interface CatalogTarget {
   readonly title: string | null;
 }
 
+/** Mirrors src/core/adapter.ts's `ApkRowStatus`. */
+export interface ApkRowStatus {
+  readonly app: string;
+  readonly branch: string;
+  readonly ready: boolean;
+  readonly customId?: string;
+}
+
+/** Mirrors src/core/adapter.ts's `ApkScenarioStatus`. `null` when the scenario has no plan at all yet. */
+export interface ApkScenarioStatus {
+  readonly scenarioId: string;
+  readonly kind: string;
+  readonly apps: readonly ApkRowStatus[];
+}
+
 export interface LoginResult {
   readonly token: string;
   readonly username: string;

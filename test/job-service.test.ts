@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { CatalogUnsupportedError, UnknownProjectError } from "../src/core/adapter";
+import { CatalogUnsupportedError, ProjectHasNoApkStatusError, UnknownProjectError } from "../src/core/adapter";
 import { JobAlreadyFinishedError, JobNotFoundError, RetryNotAllowedError } from "../src/core/job";
-import { InvalidJobRequestError, RefNotAllowedError, RefNotFoundError } from "../src/core/job-request";
+import { InvalidJobRequestError, RefNotAllowedError, RefNotFoundError, ScenarioNotReadyError } from "../src/core/job-request";
 import { FakeExecutor, FakeProjectCatalog, FakeRefs, OK, SHA_MAIN, fakeAdapter } from "./helpers/fake-adapter";
 import { buildService } from "./helpers/service";
 
@@ -118,6 +118,35 @@ describe("JobService.submit", () => {
     const ctx = buildService(fakeAdapter("detox", ["devices"], undefined, refs));
     await assert.rejects(ctx.service.submit({ project: "detox", ref: "main", target: "t" }), /invalid commit/);
   });
+
+  it("asks the adapter's checkReady, if it has one, before pinning or creating anything", async () => {
+    const refs = new FakeRefs({ main: SHA_MAIN });
+    const calls: Array<{ kind: string; target: string }> = [];
+    const adapter = {
+      ...fakeAdapter("detox", ["devices"], undefined, refs),
+      async checkReady(request: { kind: string; target: string }): Promise<void> {
+        calls.push({ kind: request.kind, target: request.target });
+      },
+    };
+    const ctx = buildService(adapter);
+    const job = await ctx.service.submit({ project: "detox", ref: "main", target: "t" });
+    assert.deepEqual(calls, [{ kind: "run", target: "t" }]);
+    await ctx.adapter.executor.finish(job.id, OK);
+  });
+
+  it("does not pin or create anything when checkReady rejects", async () => {
+    const refs = new FakeRefs({ main: SHA_MAIN });
+    const adapter = {
+      ...fakeAdapter("detox", ["devices"], undefined, refs),
+      async checkReady(): Promise<void> {
+        throw new ScenarioNotReadyError("t", ["kpmake"]);
+      },
+    };
+    const ctx = buildService(adapter);
+    await assert.rejects(ctx.service.submit({ project: "detox", ref: "main", target: "t" }), ScenarioNotReadyError);
+    assert.deepEqual(refs.pinned, []);
+    nothingCreated(ctx);
+  });
 });
 
 describe("JobService reads and cancel", () => {
@@ -171,6 +200,26 @@ describe("JobService.catalogOf", () => {
   });
 });
 
+describe("JobService.apkStatusOf", () => {
+  it("rejects an unknown project, and a configured one whose adapter is not registered", async () => {
+    const ctx = buildService();
+    await assert.rejects(ctx.service.apkStatusOf("ghost", "login"), UnknownProjectError);
+    await assert.rejects(ctx.service.apkStatusOf("web", "login"), UnknownProjectError);
+  });
+
+  it("reports a registered adapter that has no apkStatus", async () => {
+    const ctx = buildService(fakeAdapter("detox", ["devices"])); // no `apkStatus` attached
+    await assert.rejects(ctx.service.apkStatusOf("detox", "login"), ProjectHasNoApkStatusError);
+  });
+
+  it("returns the adapter's own apkStatus result when it has one", async () => {
+    const status = { scenarioId: "login", kind: "step", apps: [{ app: "kpmake", branch: "main", ready: true }] };
+    const adapter = { ...fakeAdapter("detox", ["devices"]), apkStatus: { status: async () => status } };
+    const ctx = buildService(adapter);
+    assert.deepEqual(await ctx.service.apkStatusOf("detox", "login"), status);
+  });
+});
+
 describe("JobService.retry", () => {
   it("queues a new job with the original's project, ref, kind, target and params, pointed at the same commit", async () => {
     const refs = new FakeRefs({ main: "1".repeat(40) });
@@ -179,7 +228,7 @@ describe("JobService.retry", () => {
     await ctx.adapter.executor.finish(original.id, OK);
 
     refs.commits.main = "2".repeat(40); // the branch moved: a retry must not notice
-    const retried = ctx.service.retry(original.id);
+    const retried = await ctx.service.retry(original.id);
 
     assert.notEqual(retried.id, original.id);
     assert.equal(retried.retryOf, original.id);
@@ -191,22 +240,45 @@ describe("JobService.retry", () => {
   it("refuses to retry a job that is still queued or running", async () => {
     const ctx = buildService();
     const running = await ctx.service.submit({ project: "detox", ref: "main", target: "t" });
-    assert.throws(() => ctx.service.retry(running.id), RetryNotAllowedError);
+    await assert.rejects(ctx.service.retry(running.id), RetryNotAllowedError);
     await ctx.adapter.executor.finish(running.id, OK);
   });
 
-  it("refuses to retry an unknown job", () => {
+  it("refuses to retry an unknown job", async () => {
     const ctx = buildService();
-    assert.throws(() => ctx.service.retry("ghost"), JobNotFoundError);
+    await assert.rejects(ctx.service.retry("ghost"), JobNotFoundError);
+  });
+
+  it("asks the adapter's checkReady again, since it is about today's physical state, not the original request's validity", async () => {
+    const ctx = buildService();
+    const first = await ctx.service.submit({ project: "detox", ref: "main", target: "t" });
+    await ctx.adapter.executor.finish(first.id, OK);
+    const calls: string[] = [];
+    ctx.adapter.checkReady = async (request: { target: string }): Promise<void> => {
+      calls.push(request.target);
+    };
+    const retried = await ctx.service.retry(first.id);
+    assert.deepEqual(calls, ["t"]);
+    await ctx.adapter.executor.finish(retried.id, OK);
+  });
+
+  it("does not queue a retry when checkReady rejects", async () => {
+    const ctx = buildService();
+    const first = await ctx.service.submit({ project: "detox", ref: "main", target: "t" });
+    await ctx.adapter.executor.finish(first.id, OK);
+    ctx.adapter.checkReady = async (): Promise<void> => {
+      throw new ScenarioNotReadyError("t", ["kpmake"]);
+    };
+    await assert.rejects(ctx.service.retry(first.id), ScenarioNotReadyError);
   });
 
   it("a retry can itself be retried", async () => {
     const ctx = buildService();
     const first = await ctx.service.submit({ project: "detox", ref: "main", target: "t" });
     await ctx.adapter.executor.finish(first.id, OK);
-    const second = ctx.service.retry(first.id);
+    const second = await ctx.service.retry(first.id);
     await ctx.adapter.executor.finish(second.id, OK);
-    const third = ctx.service.retry(second.id);
+    const third = await ctx.service.retry(second.id);
     assert.equal(third.retryOf, second.id);
     await ctx.adapter.executor.finish(third.id, OK);
   });

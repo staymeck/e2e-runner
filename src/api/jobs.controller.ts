@@ -43,8 +43,8 @@ export class JobsController {
   }
 
   @Post(":id/retry")
-  retry(@Param("id") id: string): JobView {
-    const job = this.jobs.retry(id);
+  async retry(@Param("id") id: string): Promise<JobView> {
+    const job = await this.jobs.retry(id);
     return toJobView(job, this.jobs.waitingReasonFor(job.id));
   }
 
