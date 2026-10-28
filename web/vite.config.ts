@@ -3,6 +3,11 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  // Lets a deployment serve this app under a path prefix (e.g. a host nginx reverse-proxying
+  // /orchestrator/ to this container) without hardcoding one: unset, it stays "/" like today.
+  // Must end in "/" — Vite's own convention, also what `import.meta.env.BASE_URL` then exposes
+  // at runtime for the router basename and the API client to read (see client.ts, main.tsx).
+  base: process.env.E2E_RUNNER_WEB_BASE || "/",
   build: {
     outDir: "dist",
     emptyOutDir: true,

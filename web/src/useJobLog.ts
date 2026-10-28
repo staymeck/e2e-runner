@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, errorMessage } from "./api/client";
+import { api, apiPath, errorMessage } from "./api/client";
 import type { JobView } from "./api/types";
 
 export interface JobLogState {
@@ -51,7 +51,7 @@ export function useJobLog(jobId: string | undefined): JobLogState {
       if (!isCurrent()) return;
 
       const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-      const socket = new WebSocket(`${scheme}//${location.host}/v1/jobs/${encodeURIComponent(id)}/stream?ticket=${ticket}&from=${initial.nextFrom}`);
+      const socket = new WebSocket(`${scheme}//${location.host}${apiPath(`/v1/jobs/${encodeURIComponent(id)}/stream`)}?ticket=${ticket}&from=${initial.nextFrom}`);
       if (!isCurrent()) {
         socket.close();
         return;
