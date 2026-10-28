@@ -53,6 +53,22 @@ export interface CatalogWorkspaces extends RefPinner {
    * the scheduler runs one job at a time (the `devices` resource).
    */
   prepareRun(sha: string): Promise<Workspace>;
+  /**
+   * The run folder's path, with no lock and no checkout — just the plain directory a build job's
+   * `builds/` output ends up under (STA-48's `apk-status` needs this, not the browsing folder: the
+   * two are separate worktrees, so `builds/` — gitignored, never shared by a worktree the way tracked
+   * history is — only ever gets populated in the one a real build actually ran in).
+   *
+   * Deliberately advisory, not serialized: `apkStatus`/`checkReady` (the only callers) are reachable at
+   * any time — a submit, a retry, a GET endpoint — with no lock of their own, so a read here can land
+   * while `prepareRun` is mid-checkout/clean/install for some other job. That is an accepted gap, not a
+   * guarantee this is race-free: `git clean -ffd` (no `-x`) never touches `builds/` itself, since it is
+   * gitignored, so a concurrent checkout cannot make a finished build disappear underneath this read.
+   * The worst case is a transient error reading a tracked file mid-checkout, which both callers already
+   * treat as "unknown status" (`detoxCheckReady` fails open; `apkStatusChecker` surfaces a `CatalogReadError`
+   * for the error shapes it recognizes) rather than something that needs its own lock.
+   */
+  readonly runDir: string;
   /** Forgets every pinned commit not in `keep`. Returns how many were released. */
   prunePins(keep: ReadonlySet<string>): Promise<number>;
 }
@@ -72,6 +88,10 @@ export class GitCatalogWorkspaces implements CatalogWorkspaces {
     private readonly allowedBranches: readonly string[],
     private readonly installer: DependencyInstaller,
   ) {}
+
+  get runDir(): string {
+    return this.runRepo.dir;
+  }
 
   fetch(): Promise<void> {
     return this.git.run(() => this.browseRepo.fetch());

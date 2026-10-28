@@ -133,6 +133,7 @@ describe("createDetoxAdapter.browsable", () => {
     // last, not whatever the Workspace of an earlier browse() call happened to carry.
     let lastBrowsed: string | undefined;
     const catalog: CatalogWorkspaces = {
+      runDir: "/unused",
       fetch: async () => undefined,
       refs: async () => ["main", "iteration_1"],
       browse: async (ref) => {
@@ -158,6 +159,7 @@ describe("createDetoxAdapter.browsable", () => {
     // lock browse()/fetch() use, never trust a path cached from a Workspace that may since have been
     // checked out to something else.
     const catalog: CatalogWorkspaces = {
+      runDir: "/unused",
       fetch: async () => undefined,
       refs: async () => ["main"],
       browse: async () => ({ dir: "/stale-dir-from-browse", sha: "a".repeat(40) }),
@@ -176,6 +178,7 @@ describe("createDetoxAdapter.browsable", () => {
 
   it("turns a commit with no catalog into CatalogReadError, not a 500 for the API to swallow", async () => {
     const catalog: CatalogWorkspaces = {
+      runDir: "/unused",
       fetch: async () => undefined,
       refs: async () => ["main"],
       browse: async () => {
@@ -336,11 +339,35 @@ describe("createDetoxAdapter: apkStatus and checkReady (STA-48)", () => {
     assert.equal(a.checkReady, undefined);
   });
 
-  it("apkStatus.status() reads whatever the checker reports for the browsing folder", async () => {
+  it("apkStatus.status() reads whatever the checker reports for the run folder", async () => {
     const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
     const checker = new FakeApkStatusChecker({ login: { scenarioId: "login", kind: "step", apps: [apkRow("kpmake", true)] } });
     const a = adapter(catalog, new FakeLister(), undefined, checker);
     assert.deepEqual(await a.apkStatus!.status("login"), { scenarioId: "login", kind: "step", apps: [apkRow("kpmake", true)] });
+  });
+
+  it("apkStatus.status() asks the checker for catalog.runDir, never the browsing folder — builds/ is gitignored and only the run worktree actually has it (STA-48 shipped reading the browsing folder; found by review when a real build on the server stayed \"not ready\" forever)", async () => {
+    const seen: string[] = [];
+    const catalog: CatalogWorkspaces = {
+      runDir: "/the-run-folder",
+      fetch: async () => undefined,
+      refs: async () => ["main"],
+      browse: async (ref) => ({ dir: "/the-browse-folder", sha: `${ref}-sha`.padEnd(40, "0") }),
+      withBrowseLock: async (fn) => fn("/the-browse-folder"),
+      prepareRun: async (sha) => ({ dir: "/the-run-folder", sha }),
+      prunePins: async () => 0,
+      pin: async (ref) => `${ref}-sha`.padEnd(40, "0"),
+      release: async () => undefined,
+    };
+    const checker: ApkStatusLister = {
+      status: async (dir, scenarioId) => {
+        seen.push(dir);
+        return { scenarioId, kind: "step", apps: [] };
+      },
+    };
+    const a = adapter(catalog, new FakeLister(), undefined, checker);
+    await a.apkStatus!.status("login");
+    assert.deepEqual(seen, ["/the-run-folder"]);
   });
 
   it("apkStatus.status() turns an old branch (no apk-status command) into CatalogReadError, same as devices does", async () => {
@@ -379,6 +406,30 @@ describe("createDetoxAdapter: apkStatus and checkReady (STA-48)", () => {
     const checker = new FakeApkStatusChecker({ login: { scenarioId: "login", kind: "step", apps: [apkRow("kpmake", true), apkRow("kpfry", true)] } });
     const a = adapter(catalog, new FakeLister(), undefined, checker);
     await a.checkReady!({ kind: "run", target: "login", params: null });
+  });
+
+  it("checkReady also asks the checker for catalog.runDir, never the browsing folder", async () => {
+    const seen: string[] = [];
+    const catalog: CatalogWorkspaces = {
+      runDir: "/the-run-folder",
+      fetch: async () => undefined,
+      refs: async () => ["main"],
+      browse: async (ref) => ({ dir: "/the-browse-folder", sha: `${ref}-sha`.padEnd(40, "0") }),
+      withBrowseLock: async (fn) => fn("/the-browse-folder"),
+      prepareRun: async (sha) => ({ dir: "/the-run-folder", sha }),
+      prunePins: async () => 0,
+      pin: async (ref) => `${ref}-sha`.padEnd(40, "0"),
+      release: async () => undefined,
+    };
+    const checker: ApkStatusLister = {
+      status: async (dir, scenarioId) => {
+        seen.push(dir);
+        return { scenarioId, kind: "step", apps: [] };
+      },
+    };
+    const a = adapter(catalog, new FakeLister(), undefined, checker);
+    await a.checkReady!({ kind: "run", target: "login", params: null });
+    assert.deepEqual(seen, ["/the-run-folder"]);
   });
 
   it("checkReady rejects a \"run\" whose scenario has an app that is not built, naming it", async () => {
