@@ -15,9 +15,17 @@ export function errorMessage(err: unknown): string {
   return err instanceof ApiError ? err.message : String(err);
 }
 
+/** BASE_URL mirrors vite.config.ts's "base" (e.g. "/orchestrator/"); every call site below passes an
+ * absolute, root-relative path like "/v1/jobs", so this is the one place that joins the two — a
+ * deployment behind a path-prefixing reverse proxy needs the browser to actually request
+ * "/orchestrator/v1/jobs", or the proxy's own routing never sees it as traffic meant for this app. */
+export function apiPath(path: string): string {
+  return `${import.meta.env.BASE_URL.replace(/\/$/, "")}${path}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const session = getStoredSession();
-  const res = await fetch(path, {
+  const res = await fetch(apiPath(path), {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -41,7 +49,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 /** Only `login` goes through here directly: it is the one call made before a session token exists. */
 async function requestNoAuth<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
+  const res = await fetch(apiPath(path), { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
     try {

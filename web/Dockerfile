@@ -6,6 +6,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+# Set this only when a host reverse proxy serves this app under a path prefix, e.g.
+# --build-arg WEB_BASE=/orchestrator/ (must end in "/"). Unset, it builds for the domain root,
+# exactly like local development — see vite.config.ts's own comment.
+ARG WEB_BASE=/
+ENV E2E_RUNNER_WEB_BASE=$WEB_BASE
 RUN npm run build
 
 FROM nginx:1.27-alpine

@@ -9,7 +9,10 @@ if (!root) throw new Error("missing #root element");
 
 createRoot(root).render(
   <StrictMode>
-    <BrowserRouter>
+    {/* BASE_URL mirrors vite.config.ts's own "base" (e.g. "/orchestrator/") — a deployment behind a
+        path-prefixing reverse proxy needs client-side routes to match it too, or a link like
+        /mobile/escenarios resolves outside the prefix the proxy actually forwards. */}
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <App />
     </BrowserRouter>
   </StrictMode>,
