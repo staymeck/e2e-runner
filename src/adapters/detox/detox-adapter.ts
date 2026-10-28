@@ -81,12 +81,19 @@ function devicesChecker(catalog: CatalogWorkspaces, deviceLister: DeviceLister):
   };
 }
 
-/** Holds the same browse lock `devicesChecker` does — see its own comment for why. */
+/**
+ * Reads `catalog.runDir`, never the browsing folder — found by review (STA-48 shipped reading the
+ * browsing folder, the same mistake STA-44 made and fixed): a build's `builds/<app>/<branch>/...`
+ * output is gitignored, so it is never shared between the two worktrees the way tracked history is.
+ * Only the run folder ever actually has it; checking the browsing folder reports "not ready" forever,
+ * even right after a real, successful build. See `CatalogWorkspaces.runDir`'s own comment for the
+ * (deliberately advisory, not race-free) tradeoff of reading it without a lock.
+ */
 function apkStatusChecker(catalog: CatalogWorkspaces, checker: ApkStatusLister): ApkStatusChecker {
   return {
     async status(scenarioId: string): Promise<ApkScenarioStatus | null> {
       try {
-        return await catalog.withBrowseLock((dir) => checker.status(dir, scenarioId));
+        return await checker.status(catalog.runDir, scenarioId);
       } catch (error) {
         if (error instanceof ApkStatusUnsupportedError || error instanceof ApkStatusReadError) throw new CatalogReadError(error.message);
         throw error;
@@ -106,7 +113,7 @@ async function detoxCheckReady(request: JobRequestInput, catalog: CatalogWorkspa
   if (request.kind !== "run") return;
   let status: ApkScenarioStatus | null;
   try {
-    status = await catalog.withBrowseLock((dir) => checker.status(dir, request.target));
+    status = await checker.status(catalog.runDir, request.target);
   } catch {
     return;
   }

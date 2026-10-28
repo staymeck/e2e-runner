@@ -84,6 +84,10 @@ export class FakeCatalog implements CatalogWorkspaces {
     private readonly commits: Record<string, string> = { main: "a".repeat(40), iteration_1: "b".repeat(40) },
   ) {}
 
+  get runDir(): string {
+    return this.dir;
+  }
+
   async fetch(): Promise<void> {}
   async refs(): Promise<string[]> {
     return Object.keys(this.commits);

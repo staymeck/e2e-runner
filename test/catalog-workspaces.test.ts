@@ -276,6 +276,14 @@ describe("concurrency", () => {
   });
 });
 
+describe("runDir", () => {
+  it("is the run folder's own path, never the browsing folder's (STA-52)", () => {
+    const { catalog, fixture } = setup();
+    assert.equal(catalog.runDir, fixture.runnerDir);
+    assert.notEqual(catalog.runDir, fixture.infoDir);
+  });
+});
+
 describe("withBrowseLock", () => {
   it("reports the browsing folder's own path, never the run folder's", async () => {
     const { catalog, fixture } = setup();
