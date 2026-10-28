@@ -61,11 +61,54 @@ fi
 export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 
 # --- Python + PyYAML + python-dotenv (build-apk.py, shelled out to by every build job) ---
-# Lives inside the catalog's own installed orchestrator (E2E_DETOX_RUNNER_DIR, from .env) — not
-# this repo, which never depends on the orchestrator itself. Same reasoning as the old orchestrator
-# API's launcher: install once, then hard-fail at boot if it still does not import, so a missing
-# dependency surfaces here — not mid-build, hours later.
-PYTHON_BIN="${ORCH_PYTHON:-python3}"
+# Same idea as the old orchestrator API's launcher (deploy/start-perfect-qa-api.sh, removed in
+# STA-39): a dedicated named virtualenv, not whatever bare `python3` happens to be on PATH, so the
+# host's own Python installs are never touched. Default env name is "e2e-runner-env" (ORCH_PYTHON_ENV
+# overrides it); ORCH_PYTHON itself always wins if set, same as before.
+PYTHON_ENV_NAME="${ORCH_PYTHON_ENV:-e2e-runner-env}"
+
+resolve_python() {
+  if [[ -n "${ORCH_PYTHON:-}" && -x "${ORCH_PYTHON}" ]]; then
+    echo "$ORCH_PYTHON"
+    return 0
+  fi
+
+  if command -v pyenv >/dev/null 2>&1; then
+    local pyenv_prefix
+    pyenv_prefix="$(pyenv prefix "$PYTHON_ENV_NAME" 2>/dev/null || true)"
+    if [[ -n "$pyenv_prefix" && -x "$pyenv_prefix/bin/python3" ]]; then
+      echo "$pyenv_prefix/bin/python3"
+      return 0
+    fi
+  fi
+
+  local candidate
+  for candidate in \
+    "$HOME/.virtualenvs/$PYTHON_ENV_NAME/bin/python3" \
+    "$HOME/miniconda3/envs/$PYTHON_ENV_NAME/bin/python3" \
+    "$HOME/anaconda3/envs/$PYTHON_ENV_NAME/bin/python3" \
+    "/opt/homebrew/Caskroom/miniconda/base/envs/$PYTHON_ENV_NAME/bin/python3"; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  # Nothing named exists yet: create it with the stdlib's own venv (no pyenv/conda required).
+  local venv_dir="$HOME/.virtualenvs/$PYTHON_ENV_NAME"
+  echo "[start-e2e-runner] Creating virtualenv '$PYTHON_ENV_NAME' at $venv_dir" >&2
+  python3 -m venv "$venv_dir"
+  echo "$venv_dir/bin/python3"
+}
+
+PYTHON_BIN="$(resolve_python)"
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+  echo "ERROR: could not resolve or create a python3 for env '$PYTHON_ENV_NAME'" >&2
+  exit 1
+fi
+export VIRTUAL_ENV="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)"
+export PATH="$(dirname "$PYTHON_BIN"):$PATH"
+
 REQUIREMENTS_FILE="${E2E_DETOX_RUNNER_DIR:-}/node_modules/@perfect/e2e-orchestrator/scripts/requirements.txt"
 if ! "$PYTHON_BIN" -c "import yaml, dotenv" >/dev/null 2>&1; then
   if [[ -f "$REQUIREMENTS_FILE" ]]; then
@@ -77,6 +120,7 @@ if ! "$PYTHON_BIN" -c "import yaml, dotenv" >/dev/null 2>&1; then
   echo "ERROR: python deps missing (yaml, dotenv) in $PYTHON_BIN — pip install -r <orchestrator>/scripts/requirements.txt" >&2
   exit 1
 fi
+export ORCH_PYTHON="$PYTHON_BIN"
 
 cd "$REPO_ROOT"
 
