@@ -64,6 +64,12 @@ a {
   flex-wrap: wrap;
 }
 
+/** Extra breathing room above a field-row that follows a table right above it (e.g. the Ejecutar/Compilar
+ * actions under the apps table in ScenarioDetailPage), where the default margin-bottom alone isn't enough. */
+.field-row-spaced {
+  margin-top: 20px;
+}
+
 .field-row label {
   display: flex;
   flex-direction: column;

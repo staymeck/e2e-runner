@@ -261,6 +261,14 @@ describe("createDetoxAdapter: devices and canStart (STA-46)", () => {
     assert.deepEqual(await a.canStart!(fakeJob({ kind: "pipeline", target: "all" })), { ready: true });
   });
 
+  it("is always ready for a build of one specific scenario too — compiling never touches a device (STA-49)", async () => {
+    const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
+    const lister = new FakeLister({ "/x": [scenario("login", { kind: "step", apps: ["kpmake", "kpfry"] })] });
+    const a = adapter(catalog, lister, new FakeDeviceLister(0));
+    await a.browsable!.browse("main");
+    assert.deepEqual(await a.canStart!(fakeJob({ kind: "build", target: "login" })), { ready: true });
+  });
+
   it("is ready when a step scenario's own app count is met by connected devices", async () => {
     const catalog = new FakeCatalog("/x", { main: "a".repeat(40) });
     const lister = new FakeLister({ "/x": [scenario("login", { kind: "step", apps: ["kpmake", "kpfry"] })] });

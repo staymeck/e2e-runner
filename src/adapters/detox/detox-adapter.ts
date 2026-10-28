@@ -14,7 +14,7 @@ import { CatalogReadError, InvalidJobRequestError, ScenarioNotReadyError } from 
 import { ApkStatusReadError, ApkStatusUnsupportedError, type ApkStatusLister } from "./apk-status-checker";
 import { CatalogError, type CatalogWorkspaces, type Workspace } from "./catalog-workspaces";
 import { DeviceListingError, DevicesUnsupportedError, type DeviceLister } from "./device-checker";
-import { DETOX_KINDS, namesAScenario, validateDetoxRequest } from "./detox-request";
+import { DETOX_KINDS, validateDetoxRequest } from "./detox-request";
 import { DetoxExecutor, type DetoxExecutorDeps } from "./detox-executor";
 import { ScenarioListingError, ScenariosUnsupportedError, type ScenarioInfo, type ScenarioLister } from "./scenario-lister";
 
@@ -123,10 +123,13 @@ function requiredDevices(scenario: ScenarioInfo): number {
 }
 
 /**
- * Whether this job's own scenario has enough devices connected right now. Only applies to a job that
- * names one scenario (`run`, or `build` of a specific target) — "build all" and a pipeline's own build
- * phase don't have a single scenario's device count to check against, so they are always ready here;
- * nothing stops the real run later from discovering a device problem the normal way.
+ * Whether this job's own scenario has enough devices connected right now. Only applies to a `run`
+ * (checked by `kind`, not `namesAScenario`, which also covers a specific `build` — STA-49: compiling
+ * never touches a physical device, only Docker/Gradle, so gating it on device count blocked a build
+ * for no reason whenever nothing was connected). "build all", any `build` of one target, and a
+ * pipeline's own build phase don't have (or don't need) a single scenario's device count to check
+ * against, so they are always ready here; nothing stops the real run later from discovering a device
+ * problem the normal way.
  *
  * Reads the scenario's shape from the browsing folder's *current* position, not the job's own pinned
  * commit (the run folder is exclusively held by whichever job is actually running, not available to
@@ -136,7 +139,7 @@ function requiredDevices(scenario: ScenarioInfo): number {
  * check the executor already does once a job starts is unaffected by this.
  */
 async function detoxCanStart(job: Job, catalog: CatalogWorkspaces, lister: ScenarioLister, deviceLister: DeviceLister): Promise<Readiness> {
-  if (!namesAScenario(job)) return { ready: true };
+  if (job.kind !== "run") return { ready: true };
   const scenarios = await catalog.withBrowseLock((dir) => lister.list(dir));
   const scenario = scenarios.find((s) => s.id === job.target);
   if (!scenario) return { ready: true }; // unknown here; the executor's own check (at the right commit) is what actually matters

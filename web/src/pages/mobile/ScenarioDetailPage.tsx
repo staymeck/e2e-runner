@@ -160,7 +160,7 @@ export function ScenarioDetailPage() {
         </>
       )}
 
-      <div className="field-row">
+      <div className="field-row field-row-spaced">
         <button className="btn btn-primary" onClick={onRun} disabled={triggering || !canRun}>
           {triggering ? "Encolando…" : "Ejecutar escenario"}
         </button>
