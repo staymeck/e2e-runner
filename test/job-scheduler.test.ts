@@ -488,6 +488,44 @@ describe("a final status that cannot be recorded", () => {
   });
 });
 
+describe("onFinished (STA-54)", () => {
+  it("is told the now-persisted job, reportPath included, once it reaches a terminal status", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const store = new SqliteJobStore(openMemoryDatabase());
+    const registry = new AdapterRegistry([detox]);
+    const finished: Job[] = [];
+    const scheduler = new JobScheduler(store, registry, undefined, { onFinished: (job) => finished.push(job) });
+    const job = new JobEnqueuer(store, registry, scheduler).enqueue(request("detox"));
+    await detox.executor.finish(job.id, { ...OK, reportPath: "/reports/job.html" });
+    assert.deepEqual(finished.map((j) => [j.id, j.status, j.reportPath]), [[job.id, "succeeded", "/reports/job.html"]]);
+  });
+
+  it("is not told anything when no hook was given", async () => {
+    const detox = fakeAdapter("detox", ["devices"]);
+    const r = rig(openMemoryDatabase(), detox);
+    const job = r.enqueuer.enqueue(request("detox"));
+    await detox.executor.finish(job.id, OK); // would throw if the scheduler assumed a hook always exists
+    assert.equal(statusOf(r, job), "succeeded");
+  });
+
+  it("still runs on the forced fallback after a failed transition", async () => {
+    class RefusesSuccess extends SqliteJobStore {
+      override transition(id: string, to: Parameters<SqliteJobStore["transition"]>[1], details?: Parameters<SqliteJobStore["transition"]>[2]) {
+        if (to === "succeeded") throw new Error("store refused");
+        return super.transition(id, to, details);
+      }
+    }
+    const detox = fakeAdapter("detox", ["devices"]);
+    const store = new RefusesSuccess(openMemoryDatabase());
+    const registry = new AdapterRegistry([detox]);
+    const finished: Job[] = [];
+    const scheduler = new JobScheduler(store, registry, undefined, { onFinished: (job) => finished.push(job) });
+    const job = new JobEnqueuer(store, registry, scheduler).enqueue(request("detox"));
+    await detox.executor.finish(job.id, OK);
+    assert.deepEqual(finished.map((j) => [j.id, j.status]), [[job.id, "failed"]]);
+  });
+});
+
 describe("cancel: queue effects", () => {
   it("lets later jobs start when a queued job that was holding them back is cancelled", async () => {
     const holder = fakeAdapter("holder", ["devices"]);

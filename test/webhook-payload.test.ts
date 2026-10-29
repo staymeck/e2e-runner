@@ -58,6 +58,19 @@ describe("buildJobLinks", () => {
       log: "https://e2e.example.com/v1/jobs/job-1/log",
     });
   });
+
+  it("adds report with ?ticket= only when a report ticket is given (STA-54)", () => {
+    assert.deepEqual(buildJobLinks("https://e2e.example.com", "job-1", "the-ticket"), {
+      job: "https://e2e.example.com/v1/jobs/job-1",
+      log: "https://e2e.example.com/v1/jobs/job-1/log",
+      report: "https://e2e.example.com/v1/jobs/job-1/report?ticket=the-ticket",
+    });
+    assert.ok(!("report" in buildJobLinks("https://e2e.example.com", "job-1")), "no bare, unusable report link without a ticket");
+  });
+
+  it("encodes a ticket that needs it", () => {
+    assert.equal(buildJobLinks("https://e2e.example.com", "job-1", "a+b/c").report, "https://e2e.example.com/v1/jobs/job-1/report?ticket=a%2Bb%2Fc");
+  });
 });
 
 describe("buildWebhookPayload", () => {
@@ -95,6 +108,14 @@ describe("buildWebhookPayload", () => {
 
     const stillRunning = buildWebhookPayload({ event: "started", job: job({ finishedAt: null }), phase: "scenario", phaseIndex: 0, baseUrl: "https://e2e.example.com" });
     assert.equal(stillRunning.durationMs, null);
+  });
+
+  it("forwards reportTicket into links.report, and leaves it out when none is given", () => {
+    const withTicket = buildWebhookPayload({ event: "finished", job: job(), phase: "scenario", phaseIndex: 0, baseUrl: "https://e2e.example.com", reportTicket: "the-ticket" });
+    assert.equal(withTicket.links.report, "https://e2e.example.com/v1/jobs/job-1/report?ticket=the-ticket");
+
+    const withoutTicket = buildWebhookPayload({ event: "finished", job: job(), phase: "scenario", phaseIndex: 0, baseUrl: "https://e2e.example.com" });
+    assert.ok(!("report" in withoutTicket.links));
   });
 
   it("never includes a server-side path, only what the Job API itself already exposes (logPath/reportPath excluded)", () => {

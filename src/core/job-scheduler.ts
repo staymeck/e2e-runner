@@ -26,6 +26,16 @@ export interface SchedulerOptions {
    * this gate existed, since the job would not even get the chance to start-then-fail visibly.
    */
   readonly canStartTimeoutMs?: number;
+  /**
+   * Told once a job reaches a terminal status, with the now-persisted `Job` (so `reportPath` is
+   * already set). Lets a caller outside `core` (the API layer, which this file otherwise never
+   * imports from) react to "finished" without the scheduler knowing anything about what it does —
+   * today, issuing an `ArtifactTickets` entry when a report exists. Called on every path to a
+   * terminal status, including the forced fallback after a failed transition, so it must tolerate
+   * being called more than once for the same job (it already is: `ArtifactTickets.issue` is
+   * idempotent per job).
+   */
+  readonly onFinished?: (job: Job) => void;
 }
 
 export const DEFAULT_CAN_START_TIMEOUT_MS = 5_000;
@@ -60,6 +70,7 @@ export class JobScheduler implements QueueListener {
   /** Why a queued job's own `canStart` check last said it was not ready; cleared the moment it is. */
   private readonly waitingReasons = new Map<string, string>();
   private readonly recheckTimer: NodeJS.Timeout | undefined;
+  private readonly onFinished: ((job: Job) => void) | undefined;
   private stopped = false;
 
   constructor(
@@ -71,6 +82,7 @@ export class JobScheduler implements QueueListener {
     this.cancelGraceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
     this.phaseTimeoutMs = options.phaseTimeoutMs;
     this.canStartTimeoutMs = options.canStartTimeoutMs ?? DEFAULT_CAN_START_TIMEOUT_MS;
+    this.onFinished = options.onFinished;
     if (options.recheckIntervalMs) {
       this.recheckTimer = setInterval(() => this.kick(), options.recheckIntervalMs);
       this.recheckTimer.unref();
@@ -337,7 +349,6 @@ export class JobScheduler implements QueueListener {
       if (this.store.get(id)?.status === "cancelling") this.store.transition(id, "cancelled", report);
       else if (failure !== undefined) this.store.transition(id, "failed", { error: failure, ...report });
       else this.store.transition(id, "succeeded", { outcome: warned ? "warning" : "success", ...report });
-      return;
     } catch (error) {
       this.diagnostics.error({ job: id, error: describeError(error) }, "could not record the final status");
       this.safely(id, "force the final status", () => {
@@ -346,6 +357,16 @@ export class JobScheduler implements QueueListener {
         else if (status === "running") this.store.transition(id, "failed", { error: `Could not record the final status: ${describeError(error)}` });
       });
     }
+    // Once, after either path above, win or lose: a throwing hook must never be mistaken for "could
+    // not record the final status" (it is not the same failure), and must never run the forced
+    // fallback above a second time.
+    this.safely(id, "notify onFinished", () => this.notifyFinished(id));
+  }
+
+  private notifyFinished(id: string): void {
+    if (!this.onFinished) return;
+    const job = this.store.get(id);
+    if (job) this.onFinished(job);
   }
 
   // -- recovery and bookkeeping --

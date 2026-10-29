@@ -11,9 +11,12 @@ import { createWebhookEventId } from "./sign";
  *
  * Documented differences from the orchestrator's payload (ticket allows this instead of an exact port):
  * - No `label` field (the orchestrator's human-readable job label has no equivalent here).
- * - `links` has no `?token=`: this service has no per-job long-lived access token. A caller (n8n)
- *   reaches `links.log` with its own `Authorization: Bearer` API key, the same as every other route.
- * - No `report` link: nothing in this service serves a job's report over HTTP yet.
+ * - `links.log` has no `?token=`: this service has no long-lived access token for it. A caller (n8n)
+ *   reaches it with its own `Authorization: Bearer` API key, the same as every other route.
+ * - `links.report` (STA-54) carries a `?ticket=` instead of the orchestrator's `?token=`: an
+ *   `ArtifactTickets` entry, reusable across multiple opens over its own TTL rather than a stored,
+ *   manually-rotated per-job secret — see that class's own doc for why. Present only when the caller
+ *   passes one; omitted (not a bare, unusable link) otherwise.
  */
 export type WebhookEvent = "started" | "finished";
 export type WebhookJobType = "scenario" | "build" | "pipeline";
@@ -29,6 +32,7 @@ export interface WebhookPhaseResult {
 export interface WebhookJobLinks {
   readonly job: string;
   readonly log: string;
+  readonly report?: string;
 }
 
 export interface WebhookPayload {
@@ -62,9 +66,11 @@ export function toWebhookJobType(kind: Job["kind"]): WebhookJobType {
   return "pipeline";
 }
 
-export function buildJobLinks(baseUrl: string, jobId: string): WebhookJobLinks {
+/** `reportTicket`: an `ArtifactTickets` entry for this job, if the caller has one (see `WebhookJobLinks`). */
+export function buildJobLinks(baseUrl: string, jobId: string, reportTicket?: string): WebhookJobLinks {
   const base = baseUrl.replace(/\/+$/, "");
-  return { job: `${base}/v1/jobs/${jobId}`, log: `${base}/v1/jobs/${jobId}/log` };
+  const links = { job: `${base}/v1/jobs/${jobId}`, log: `${base}/v1/jobs/${jobId}/log` };
+  return reportTicket ? { ...links, report: `${base}/v1/jobs/${jobId}/report?ticket=${encodeURIComponent(reportTicket)}` } : links;
 }
 
 function toPhaseResult(phase: JobPhase): WebhookPhaseResult {
@@ -86,6 +92,8 @@ export interface BuildWebhookPayloadOptions {
   readonly phaseIndex: number | null;
   /** Origin this service's own API is reachable at, for `links` (no trailing slash needed). */
   readonly baseUrl: string;
+  /** Forwarded to `buildJobLinks`: an `ArtifactTickets` entry for this job, if the caller has one. */
+  readonly reportTicket?: string;
   readonly eventId?: string;
   readonly timestamp?: number;
 }
@@ -113,6 +121,6 @@ export function buildWebhookPayload(opts: BuildWebhookPayloadOptions): WebhookPa
     durationMs: durationOf(job.startedAt, job.finishedAt),
     error: job.error,
     phases: job.phases.map(toPhaseResult),
-    links: buildJobLinks(opts.baseUrl, job.id),
+    links: buildJobLinks(opts.baseUrl, job.id, opts.reportTicket),
   };
 }

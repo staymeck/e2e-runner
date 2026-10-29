@@ -9,12 +9,35 @@ const POLL_MS = 5000;
 const FINISHED = ["succeeded", "failed", "cancelled"] as const;
 
 /**
- * The service tracks `job.reportPath` internally (src/core/job.ts) but no HTTP endpoint serves it —
- * `buildWebhookPayload` (src/webhooks/payload.ts) deliberately excludes server-side paths from what
- * leaves the process, and nothing in STA-31/42/43 added a report-serving route either. This page
- * shows the finished jobs a report would belong to; opening the report itself needs a new endpoint
- * that does not exist yet (worth raising as a follow-up, not something to guess the shape of here).
+ * Fetches the report as a blob (it needs our own Authorization, a plain link cannot carry one) and
+ * opens it in a new tab. The tab is opened synchronously, on the click itself, with nothing in it yet
+ * — popup blockers key off that synchronous "user activation" moment, and opening it only after the
+ * `await fetch` below (found by review) loses it, so the tab is silently blocked whenever the fetch
+ * takes any real time at all. It is then pointed at the blob once the fetch resolves, instead.
+ *
+ * Deliberately never revokes the blob URL: the tab keeps using it for as long as it stays open (it
+ * may well still be loading embedded screenshots/video from the Detox report when this call returns),
+ * and there is no reliable, synchronous "the tab is done with it now" signal across tabs to revoke on.
+ * The cost is one held blob per report a person actually opens in this browser tab's lifetime — opened
+ * by a human clicking a button, not in a loop, so this never grows unbounded in practice.
  */
+function openReport(jobId: string, onError: (message: string) => void): void {
+  const tab = window.open("", "_blank");
+  if (!tab) {
+    onError("El navegador bloqueó la ventana nueva: permite ventanas emergentes para este sitio.");
+    return;
+  }
+  api.jobs
+    .reportUrl(jobId)
+    .then((url) => {
+      tab.location.href = url;
+    })
+    .catch((err) => {
+      tab.close();
+      onError(errorMessage(err));
+    });
+}
+
 export function ReportesPage() {
   const [jobs, setJobs] = useState<JobView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,10 +56,6 @@ export function ReportesPage() {
       <div className="panel-header">
         <h2>Reportes</h2>
       </div>
-      <p className="muted">
-        Todavía no hay un endpoint que sirva el contenido del reporte (solo el estado y el resultado). Por ahora, esta pestaña lista los jobs terminados; abrir el reporte en sí queda
-        pendiente.
-      </p>
       {error && <p className="error">{error}</p>}
       {!jobs ? (
         <p className="muted">Cargando…</p>
@@ -70,6 +89,14 @@ export function ReportesPage() {
                 <td>{job.finishedAt ? new Date(job.finishedAt).toLocaleString() : "—"}</td>
                 <td>
                   <Link to={`/mobile/jobs/${encodeURIComponent(job.id)}`}>Ver logs</Link>
+                  {job.hasReport && (
+                    <>
+                      {" · "}
+                      <a href="#" onClick={(e) => (e.preventDefault(), openReport(job.id, setError))}>
+                        Ver reporte
+                      </a>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}

@@ -118,5 +118,18 @@ export const api = {
     retry: (id: string) => request<JobView>(`/v1/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" }),
     log: (id: string, from = 0) => request<{ text: string; nextFrom: number }>(`/v1/jobs/${encodeURIComponent(id)}/log?from=${from}`),
     streamTicket: (id: string) => request<{ ticket: string }>(`/v1/jobs/${encodeURIComponent(id)}/stream-ticket`, { method: "POST" }),
+    /**
+     * An object URL for the job's HTML report, carrying our own session/API-key Authorization — a
+     * plain `<a href>` to `/report` could not do that itself. The caller revokes it (`URL.revokeObjectURL`)
+     * once done with it, e.g. right after `window.open`.
+     */
+    reportUrl: async (id: string): Promise<string> => {
+      const session = getStoredSession();
+      const res = await fetch(apiPath(`/v1/jobs/${encodeURIComponent(id)}/report`), {
+        headers: session ? { Authorization: `Bearer ${session.token}` } : {},
+      });
+      if (!res.ok) throw new ApiError(`${res.status} ${res.statusText}`, res.status);
+      return URL.createObjectURL(await res.blob());
+    },
   },
 };

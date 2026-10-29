@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD } from "@nestjs/core";
+import { ArtifactAccessGuard } from "./api/artifact-access.guard";
 import { AuthController } from "./api/auth.controller";
 import { AuthGuard } from "./api/auth.guard";
 import { DomainExceptionFilter } from "./api/domain-exception.filter";
@@ -7,6 +8,7 @@ import { HealthController } from "./api/health.controller";
 import { JobsController } from "./api/jobs.controller";
 import { ProjectsController } from "./api/projects.controller";
 import { API_KEY_VERIFIER, ApiKeyVerifier } from "./auth/api-key-verifier";
+import { ARTIFACT_TICKETS, ArtifactTickets } from "./auth/artifact-ticket";
 import { STREAM_TICKETS, StreamTickets } from "./auth/stream-ticket";
 import { WEB_SESSIONS, WebSessions } from "./auth/web-sessions";
 import { WEB_USER_DIRECTORY, WebUserDirectory } from "./auth/web-users";
@@ -24,6 +26,13 @@ export interface AppDependencies {
   readonly diagnostics?: Diagnostics;
   /** Run in order when the app shuts down, e.g. to drain the scheduler and then close the database. */
   readonly onShutdown?: readonly ShutdownCallback[];
+  /**
+   * Built in `main.ts`, not here: `JobScheduler`'s `onFinished` hook (core, outside Nest) issues a
+   * ticket the moment a job with a report finishes, so it must share this exact instance with the
+   * `ArtifactAccessGuard` that later verifies one. Defaults to a fresh instance for a caller (e.g. a
+   * test) that does not care about that wiring.
+   */
+  readonly artifactTickets?: ArtifactTickets;
 }
 
 @Module({})
@@ -39,6 +48,7 @@ export class AppModule {
         { provide: JOB_SERVICE, useValue: dependencies.jobs },
         { provide: JOB_LOG_READER, useValue: dependencies.logs ?? { read: () => ({ text: "", nextFrom: 0 }) } },
         { provide: STREAM_TICKETS, useValue: new StreamTickets() },
+        { provide: ARTIFACT_TICKETS, useValue: dependencies.artifactTickets ?? new ArtifactTickets() },
         { provide: DIAGNOSTICS, useValue: dependencies.diagnostics ?? silentDiagnostics },
         { provide: SHUTDOWN_CALLBACKS, useValue: dependencies.onShutdown ?? [] },
         ShutdownHooks,
@@ -46,6 +56,7 @@ export class AppModule {
         LogStreamShutdown,
         { provide: APP_GUARD, useClass: AuthGuard },
         { provide: APP_FILTER, useClass: DomainExceptionFilter },
+        ArtifactAccessGuard,
       ],
     };
   }
