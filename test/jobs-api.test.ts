@@ -10,6 +10,7 @@ import type { ProjectCatalog } from "../src/core/adapter";
 import type { ServiceConfig } from "../src/config/service-config";
 import { CatalogReadError, ScenarioNotReadyError } from "../src/core/job-request";
 import { FileJobLog } from "../src/infra/file-job-log";
+import type { WebhookSubscriberSecrets } from "../src/webhooks/subscribers";
 import { FakeProjectCatalog, FakeRefs, OK, fakeAdapter, type FakeAdapter } from "./helpers/fake-adapter";
 import { buildService } from "./helpers/service";
 import { scratchDir } from "./helpers/workspace";
@@ -47,6 +48,7 @@ async function withApi(
   run: (api: Api) => Promise<void>,
   adapter: FakeAdapter = fakeAdapter("detox", ["devices"]),
   artifactTickets?: ArtifactTickets,
+  webhookSubscribers?: ReadonlyMap<string, WebhookSubscriberSecrets>,
 ): Promise<void> {
   const ctx = buildService(adapter);
   const logged: string[] = [];
@@ -56,6 +58,7 @@ async function withApi(
     logs,
     diagnostics: { info: () => undefined, warn: () => undefined, error: (_fields, message) => logged.push(message) },
     ...(artifactTickets ? { artifactTickets } : {}),
+    ...(webhookSubscribers ? { webhookSubscribers } : {}),
   });
   await app.listen(0, "127.0.0.1");
   const base = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}`;
@@ -427,6 +430,81 @@ describe("POST /v1/jobs", () => {
         assert.ok(!(await response.text()).includes("upstream"));
       },
       fakeAdapter("detox", ["devices"], undefined, new StatusError()),
+    );
+  });
+});
+
+describe("POST /v1/jobs — webhookUrl (STA-35)", () => {
+  const subscribers = new Map([["n8n.example.com", { current: "sec" }]]);
+
+  it("accepts and stores an allowlisted https webhookUrl", async () => {
+    await withApi(
+      async (api) => {
+        const response = await api.submit({ project: "detox", ref: "main", target: "t", webhookUrl: "https://n8n.example.com/hooks/e2e" });
+        assert.equal(response.status, 201);
+        const job = (await response.json()) as JobBody;
+        assert.ok(!("webhookUrl" in job), "never echoed back — the caller already has it");
+        assert.equal(api.ctx.store.get(job.id)?.webhookUrl, "https://n8n.example.com/hooks/e2e", "actually stored, not just accepted");
+        await api.adapter.executor.finish(job.id, OK);
+      },
+      fakeAdapter("detox", ["devices"]),
+      undefined,
+      subscribers,
+    );
+  });
+
+  it("answers 400 and creates nothing for a webhookUrl that is not https", async () => {
+    await withApi(
+      async (api) => {
+        const response = await api.submit({ project: "detox", ref: "main", target: "t", webhookUrl: "http://n8n.example.com/hooks/e2e" });
+        assert.equal(response.status, 400);
+        assert.equal(((await response.json()) as { error: string }).error, "webhook_url_not_allowed");
+        noJobsOrPins(api);
+      },
+      fakeAdapter("detox", ["devices"]),
+      undefined,
+      subscribers,
+    );
+  });
+
+  it("answers 400 for a host that is not in E2E_WEBHOOK_SUBSCRIBERS", async () => {
+    await withApi(
+      async (api) => {
+        const response = await api.submit({ project: "detox", ref: "main", target: "t", webhookUrl: "https://someone-else.example.com/hook" });
+        assert.equal(response.status, 400);
+        noJobsOrPins(api);
+      },
+      fakeAdapter("detox", ["devices"]),
+      undefined,
+      subscribers,
+    );
+  });
+
+  it("answers 400 for any webhookUrl at all when no subscribers are configured", async () => {
+    // An explicit empty map, never the real process.env.E2E_WEBHOOK_SUBSCRIBERS: this must hold
+    // regardless of whatever happens to be set in the environment running this test.
+    await withApi(
+      async (api) => {
+        const response = await api.submit({ project: "detox", ref: "main", target: "t", webhookUrl: "https://n8n.example.com/hook" });
+        assert.equal(response.status, 400);
+        assert.match(((await response.json()) as { message: string }).message, /disabled/);
+        noJobsOrPins(api);
+      },
+      fakeAdapter("detox", ["devices"]),
+      undefined,
+      new Map(),
+    );
+  });
+
+  it("answers 400 for a malformed URL, and for an unknown field, the same as any other bad submission", async () => {
+    await withApi(
+      async (api) => {
+        assert.equal((await api.submit({ project: "detox", target: "t", webhookUrl: "not a url" })).status, 400);
+        assert.equal((await api.submit({ project: "detox", target: "t", webhookUrl: 5 })).status, 400);
+      },
+      fakeAdapter("detox", ["devices"]),
+      undefined,
+      subscribers,
     );
   });
 });

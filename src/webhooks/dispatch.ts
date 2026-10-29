@@ -6,9 +6,9 @@ import { assertWebhookDestinationSafe } from "./url-guard";
 
 /**
  * Adapted from the orchestrator's `api/webhook/dispatch.ts`: same signing and anti-SSRF checks, built
- * on this service's own payload shape. Not wired to fire automatically from the scheduler — deciding
- * when a job's webhook URL comes from, and which lifecycle points dispatch `started`/`finished`, is
- * STA-35's job. This is the ready-to-call primitive for it.
+ * on this service's own payload shape. Called from `notify-on-finish.ts` (STA-35), itself wired into
+ * `JobScheduler.onFinished` in `main.ts` — only for the "finished" event today, not "started": the
+ * only lifecycle point this needed per STA-35's own scope ("los webhooks de fin").
  *
  * The original logged a delivery failure itself (via Nest's own Logger, which this module must not
  * depend on). This takes the service's generic `Diagnostics` instead, defaulting to silent: a caller
@@ -44,6 +44,13 @@ export async function postJobWebhookEvent(url: string, options: BuildWebhookPayl
         headers: { "content-type": "application/json", "x-webhook-id": eventId, "x-webhook-signature": signature },
         body: rawBody,
         signal: controller.signal,
+        // `assertWebhookDestinationSafe` only validated *this* URL's host/IP: automatically following a
+        // redirect (fetch's default) would send the signed body to wherever a 3xx takes it, unchecked —
+        // classic SSRF-via-redirect, reachable from any client with the API key, not just n8n (found by
+        // review). Manual mode still returns a normal, readable response for a 3xx (confirmed: `status`
+        // and `location` header both present, not an opaque one), so the existing `!response.ok` below
+        // already treats it as a plain failure — nothing more to special-case.
+        redirect: "manual",
       });
       if (!response.ok) return fail(`Webhook HTTP ${response.status} ${response.statusText}`);
       return { ok: true, eventId };

@@ -36,7 +36,7 @@ function job(overrides: Partial<Job> = {}): Job {
   return {
     seq: 1, id: "job-1", project: "detox", kind: "run", status: "running", ref: "main", sha: SHA, target: "login", params: {}, locks: ["devices"],
     retryOf: null, createdAt: "", startedAt: "", finishedAt: null, cancelRequestedAt: null, outcome: null, error: null, pid: null, logPath: null,
-    reportPath: null, phases: [], ...overrides,
+    reportPath: null, webhookUrl: null, phases: [], ...overrides,
   };
 }
 

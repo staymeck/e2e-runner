@@ -8,6 +8,7 @@ import { STREAM_TICKETS, StreamTickets } from "../auth/stream-ticket";
 import { DIAGNOSTICS, type Diagnostics } from "../core/diagnostics";
 import { JOB_LOG_READER, type JobLogReader, type LogChunk } from "../core/job-log";
 import { JOB_SERVICE, type JobService } from "../core/job-service";
+import { WEBHOOK_SUBSCRIBERS, type WebhookSubscriberSecrets } from "../webhooks/subscribers";
 import { toJobView, type JobView } from "./job-view";
 import { parseList, parseLogFrom, parseSubmit } from "./request-parsing";
 
@@ -23,11 +24,12 @@ export class JobsController {
     @Inject(JOB_LOG_READER) private readonly logs: JobLogReader,
     @Inject(STREAM_TICKETS) private readonly tickets: StreamTickets,
     @Inject(DIAGNOSTICS) private readonly diagnostics: Diagnostics,
+    @Inject(WEBHOOK_SUBSCRIBERS) private readonly webhookSubscribers: ReadonlyMap<string, WebhookSubscriberSecrets>,
   ) {}
 
   @Post()
   async submit(@Body() body: unknown): Promise<JobView> {
-    const job = await this.jobs.submit(parseSubmit(body));
+    const job = await this.jobs.submit(parseSubmit(body, this.webhookSubscribers));
     return toJobView(job, this.jobs.waitingReasonFor(job.id));
   }
 

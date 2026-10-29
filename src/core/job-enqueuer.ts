@@ -12,6 +12,7 @@ export interface EnqueueRequest {
   readonly target: string;
   readonly params?: unknown;
   readonly retryOf?: string;
+  readonly webhookUrl?: string;
 }
 
 /**
@@ -37,6 +38,7 @@ export class JobEnqueuer {
       locks: [...new Set(adapter.locks)],
       phases: [...adapter.executor.plan({ kind: request.kind, target: request.target, params: request.params })],
       ...(request.retryOf === undefined ? {} : { retryOf: request.retryOf }),
+      ...(request.webhookUrl === undefined ? {} : { webhookUrl: request.webhookUrl }),
     });
     this.listener.kick();
     // The queue may have started it already: return what is true now, not the snapshot from creation.

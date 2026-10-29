@@ -5,6 +5,7 @@ import { CatalogUnsupportedError, ProjectHasNoApkStatusError, ProjectHasNoDevice
 import { DIAGNOSTICS, type Diagnostics } from "../core/diagnostics";
 import { InvalidTransitionError, JobAlreadyFinishedError, JobNotFoundError, RetryNotAllowedError } from "../core/job";
 import { CatalogReadError, InvalidJobRequestError, RefNotAllowedError, RefNotFoundError, ScenarioNotReadyError } from "../core/job-request";
+import { WebhookUrlNotAllowedError } from "../webhooks/url-guard";
 
 interface Mapping {
   readonly type: new (...args: never[]) => Error;
@@ -15,6 +16,7 @@ interface Mapping {
 /** The status each domain error becomes. Anything not listed is a 500 with no detail. */
 const MAPPINGS: readonly Mapping[] = [
   { type: InvalidJobRequestError, status: HttpStatus.BAD_REQUEST, code: "invalid_request" },
+  { type: WebhookUrlNotAllowedError, status: HttpStatus.BAD_REQUEST, code: "webhook_url_not_allowed" },
   { type: RefNotAllowedError, status: HttpStatus.FORBIDDEN, code: "ref_not_allowed" },
   { type: UnknownProjectError, status: HttpStatus.NOT_FOUND, code: "unknown_project" },
   { type: CatalogUnsupportedError, status: HttpStatus.NOT_FOUND, code: "catalog_unsupported" },

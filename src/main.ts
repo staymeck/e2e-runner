@@ -22,6 +22,7 @@ import { FileJobLog } from "./infra/file-job-log";
 import { NodeProcessHost } from "./infra/node-process-host";
 import { SERVICE_SECRET_NAMES, childEnvironment } from "./infra/safe-environment";
 import { PinoNestLogger, createLogger } from "./logging/logger";
+import { notifyOnFinish } from "./webhooks/notify-on-finish";
 
 const JOB_LOGS_SUBDIR = "logs";
 
@@ -29,6 +30,17 @@ const SHUTDOWN_DRAIN_MS = 10_000;
 const DEVICE_RECHECK_INTERVAL_MS = 15_000;
 /** Once a day is plenty against ArtifactTickets' 30-day TTL — this only trims entries the lazy, issue-triggered sweep hasn't gotten to yet. */
 const ARTIFACT_TICKET_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Where a webhook's own links.*, built from this, must point — never `config.server.host`/`port`
+ * directly: those are what this process binds to, which a reverse proxy (or Docker) usually makes
+ * unreachable from outside. Unset (the common case behind a path-prefixing proxy, same as
+ * E2E_RUNNER_WEB_BASE for the web/STA-51), falls back to the bind address — correct only for a setup
+ * with nothing in front of this service.
+ */
+function publicBaseUrl(host: string, port: number): string {
+  return process.env.E2E_SERVICE_PUBLIC_URL?.trim() || `http://${host}:${port}`;
+}
 
 async function main(): Promise<void> {
   const logger = createLogger();
@@ -69,9 +81,7 @@ async function main(): Promise<void> {
   // (no submission, no other job finishing) — this is what notices a device reconnecting on its own.
   const scheduler = new JobScheduler(store, adapters, logger, {
     recheckIntervalMs: DEVICE_RECHECK_INTERVAL_MS,
-    onFinished: (job) => {
-      if (job.reportPath) artifactTickets.issue(job.id);
-    },
+    onFinished: notifyOnFinish(artifactTickets, publicBaseUrl(config.server.host, config.server.port), logger),
   });
   await scheduler.reconcile();
 

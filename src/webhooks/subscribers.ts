@@ -2,6 +2,8 @@
  * Ported from the orchestrator's `api/webhook/subscribers.ts`. Renamed env var to this service's own
  * convention (`E2E_WEBHOOK_SUBSCRIBERS`, not `ORCH_WEBHOOK_SUBSCRIBERS`); the parsing itself is unchanged.
  */
+export const WEBHOOK_SUBSCRIBERS = Symbol("WEBHOOK_SUBSCRIBERS");
+
 export interface WebhookSubscriberSecrets {
   readonly current: string;
   readonly previous?: string;

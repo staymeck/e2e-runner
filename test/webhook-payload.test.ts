@@ -31,6 +31,7 @@ function job(overrides: Partial<Job> = {}): Job {
     pid: null,
     logPath: null,
     reportPath: null,
+    webhookUrl: null,
     phases: [phase()],
     ...overrides,
   };

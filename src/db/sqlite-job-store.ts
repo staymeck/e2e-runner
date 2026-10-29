@@ -69,6 +69,7 @@ function toJob(row: Row, phases: readonly JobPhase[]): Job {
     pid: row.pid === null ? null : Number(row.pid),
     logPath: row.log_path as string | null,
     reportPath: row.report_path as string | null,
+    webhookUrl: row.webhook_url as string | null,
     phases,
   };
 }
@@ -97,8 +98,8 @@ export class SqliteJobStore implements JobStore {
     this.db.transaction(() => {
       if (job.retryOf !== undefined) this.assertRetryable(job.retryOf);
       this.db.run(
-        `INSERT INTO jobs (id, project, kind, status, ref, sha, target, params, locks, retry_of, created_at)
-         VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO jobs (id, project, kind, status, ref, sha, target, params, locks, retry_of, created_at, webhook_url)
+         VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         job.project,
         job.kind,
@@ -109,6 +110,7 @@ export class SqliteJobStore implements JobStore {
         JSON.stringify(job.locks),
         job.retryOf ?? null,
         createdAt,
+        job.webhookUrl ?? null,
       );
       job.phases.forEach((name, position) => {
         this.db.run("INSERT INTO job_phases (job_id, position, name, status) VALUES (?, ?, ?, 'pending')", id, position, name);

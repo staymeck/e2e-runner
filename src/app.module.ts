@@ -18,6 +18,7 @@ import { JOB_LOG_READER, type JobLogReader } from "./core/job-log";
 import { JOB_SERVICE, type JobService } from "./core/job-service";
 import { LOG_STREAM_DETACH, LogStreamShutdown, type LogStreamDetachHolder } from "./lifecycle/log-stream-shutdown";
 import { SHUTDOWN_CALLBACKS, ShutdownHooks, type ShutdownCallback } from "./lifecycle/shutdown-hooks";
+import { parseWebhookSubscribers, WEBHOOK_SUBSCRIBERS, type WebhookSubscriberSecrets } from "./webhooks/subscribers";
 
 export interface AppDependencies {
   readonly jobs: JobService;
@@ -33,6 +34,13 @@ export interface AppDependencies {
    * test) that does not care about that wiring.
    */
   readonly artifactTickets?: ArtifactTickets;
+  /**
+   * Parsed once here (or supplied by a test that wants a fixed allowlist without touching
+   * `process.env.E2E_WEBHOOK_SUBSCRIBERS`); `POST /v1/jobs` checks a submitted `webhookUrl` against
+   * this same map (see `request-parsing.ts`). `postJobWebhookEvent` re-reads the env var itself at
+   * send time (STA-35's own `onFinished` wiring in `main.ts`) — this is only for the submit-time check.
+   */
+  readonly webhookSubscribers?: ReadonlyMap<string, WebhookSubscriberSecrets>;
 }
 
 @Module({})
@@ -49,6 +57,7 @@ export class AppModule {
         { provide: JOB_LOG_READER, useValue: dependencies.logs ?? { read: () => ({ text: "", nextFrom: 0 }) } },
         { provide: STREAM_TICKETS, useValue: new StreamTickets() },
         { provide: ARTIFACT_TICKETS, useValue: dependencies.artifactTickets ?? new ArtifactTickets() },
+        { provide: WEBHOOK_SUBSCRIBERS, useValue: dependencies.webhookSubscribers ?? parseWebhookSubscribers() },
         { provide: DIAGNOSTICS, useValue: dependencies.diagnostics ?? silentDiagnostics },
         { provide: SHUTDOWN_CALLBACKS, useValue: dependencies.onShutdown ?? [] },
         ShutdownHooks,

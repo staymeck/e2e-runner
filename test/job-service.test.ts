@@ -69,6 +69,20 @@ describe("JobService.submit", () => {
     nothingCreated(ctx);
   });
 
+  it("stores a given webhookUrl untouched — validating it is request-parsing.ts's job, not this one's (STA-35)", async () => {
+    const ctx = buildService();
+    const job = await ctx.service.submit({ project: "detox", target: "t", webhookUrl: "https://n8n.example.com/hook" });
+    assert.equal(job.webhookUrl, "https://n8n.example.com/hook");
+    await ctx.adapter.executor.finish(job.id, OK);
+  });
+
+  it("leaves webhookUrl null when none is given", async () => {
+    const ctx = buildService();
+    const job = await ctx.service.submit({ project: "detox", target: "t" });
+    assert.equal(job.webhookUrl, null);
+    await ctx.adapter.executor.finish(job.id, OK);
+  });
+
   it("lets the adapter reject the parameters, before pinning or creating anything", async () => {
     const ctx = buildService();
     await assert.rejects(ctx.service.submit({ project: "detox", target: "t", params: { shell: "rm -rf /" } }), InvalidJobRequestError);
@@ -234,6 +248,15 @@ describe("JobService.retry", () => {
     assert.equal(retried.retryOf, original.id);
     assert.deepEqual([retried.project, retried.ref, retried.kind, retried.target, retried.params, retried.sha], ["detox", "main", "build", "t", { retries: 2 }, "1".repeat(40)]);
     assert.deepEqual(refs.pinned, ["main"], "retry must never call pin() again");
+    await ctx.adapter.executor.finish(retried.id, OK);
+  });
+
+  it("keeps the original's webhookUrl too (STA-35: same exact job, same notification target)", async () => {
+    const ctx = buildService();
+    const original = await ctx.service.submit({ project: "detox", target: "t", webhookUrl: "https://n8n.example.com/hook" });
+    await ctx.adapter.executor.finish(original.id, OK);
+    const retried = await ctx.service.retry(original.id);
+    assert.equal(retried.webhookUrl, "https://n8n.example.com/hook");
     await ctx.adapter.executor.finish(retried.id, OK);
   });
 
