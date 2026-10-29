@@ -34,6 +34,8 @@ export interface JobView {
   readonly phases: readonly PhaseView[];
   /** Beyond "something else is using its resource": e.g. a Detox job waiting on a disconnected device. */
   readonly waitingReason: string | null;
+  /** Whether `GET .../report` has something to serve. The path itself stays server-side. */
+  readonly hasReport: boolean;
 }
 
 function toPhaseView(phase: JobPhase): PhaseView {
@@ -70,5 +72,6 @@ export function toJobView(job: Job, waitingReason?: string): JobView {
     phase: job.phases.find((phase) => phase.status === "running")?.name ?? null,
     phases: job.phases.map(toPhaseView),
     waitingReason: waitingReason ?? null,
+    hasReport: job.reportPath !== null,
   };
 }

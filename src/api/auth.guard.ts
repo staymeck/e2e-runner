@@ -1,10 +1,9 @@
-import { CanActivate, ExecutionContext, ForbiddenException, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
+import { CanActivate, ExecutionContext, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import type { Request } from "express";
-import { bearerTokenOf, IS_PUBLIC_KEY, ROLES_KEY } from "../auth/access-control";
+import { bearerTokenOf, enforceRole, IS_PUBLIC_KEY } from "../auth/access-control";
 import { API_KEY_VERIFIER, type CredentialVerifier } from "../auth/api-key-verifier";
 import { WEB_SESSIONS, WebSessions } from "../auth/web-sessions";
-import type { WebRole } from "../config/service-config";
 
 /**
  * Every route needs `Authorization: Bearer <token>`, unless marked `@Public()`. The token is either
@@ -37,11 +36,7 @@ export class AuthGuard implements CanActivate {
     const user = this.sessions.verify(token);
     if (!user) throw new UnauthorizedException("Invalid or missing credentials");
     request.auth = { kind: "user", username: user.username, role: user.role };
-
-    const roles = this.reflector.getAllAndOverride<WebRole[]>(ROLES_KEY, [context.getHandler(), context.getClass()]);
-    if (roles && roles.length > 0 && user.role !== "admin" && !roles.includes(user.role)) {
-      throw new ForbiddenException("Your role cannot access this resource");
-    }
+    enforceRole(this.reflector, context, user);
     return true;
   }
 }

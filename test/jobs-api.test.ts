@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import * as path from "node:path";
 import { WebSocket } from "ws";
 import { createApp } from "../src/app";
+import { ArtifactTickets } from "../src/auth/artifact-ticket";
 import type { ProjectCatalog } from "../src/core/adapter";
 import type { ServiceConfig } from "../src/config/service-config";
 import { CatalogReadError, ScenarioNotReadyError } from "../src/core/job-request";
@@ -13,7 +15,19 @@ import { buildService } from "./helpers/service";
 import { scratchDir } from "./helpers/workspace";
 
 const KEY = "current-key-0123456789";
-const config: ServiceConfig = { server: { host: "127.0.0.1", port: 0 }, apiKeys: [KEY], webUsers: [], dataDir: "/unused", projects: [], detox: undefined };
+const MOBILE_PASSWORD = "mobile-pw-very-long";
+const CYPRESS_PASSWORD = "cypress-pw-very-long";
+const config: ServiceConfig = {
+  server: { host: "127.0.0.1", port: 0 },
+  apiKeys: [KEY],
+  webUsers: [
+    { username: "mobile-user", password: MOBILE_PASSWORD, role: "e2e-mobile" },
+    { username: "cypress-user", password: CYPRESS_PASSWORD, role: "e2e-cypress" },
+  ],
+  dataDir: "/unused",
+  projects: [],
+  detox: undefined,
+};
 const logsRoot = scratchDir();
 let logsCounter = 0;
 
@@ -25,10 +39,15 @@ interface Api {
   call(method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<Response>;
   submit(body: unknown): Promise<Response>;
   json<T>(response: Promise<Response>): Promise<T>;
+  login(username: string, password: string): Promise<string>;
 }
 
 /** A fresh service, adapter and HTTP server for each test: no test depends on what another left behind. */
-async function withApi(run: (api: Api) => Promise<void>, adapter: FakeAdapter = fakeAdapter("detox", ["devices"])): Promise<void> {
+async function withApi(
+  run: (api: Api) => Promise<void>,
+  adapter: FakeAdapter = fakeAdapter("detox", ["devices"]),
+  artifactTickets?: ArtifactTickets,
+): Promise<void> {
   const ctx = buildService(adapter);
   const logged: string[] = [];
   const logs = new FileJobLog(path.join(logsRoot, `${logsCounter++}`));
@@ -36,6 +55,7 @@ async function withApi(run: (api: Api) => Promise<void>, adapter: FakeAdapter = 
     jobs: ctx.service,
     logs,
     diagnostics: { info: () => undefined, warn: () => undefined, error: (_fields, message) => logged.push(message) },
+    ...(artifactTickets ? { artifactTickets } : {}),
   });
   await app.listen(0, "127.0.0.1");
   const base = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}`;
@@ -45,8 +65,13 @@ async function withApi(run: (api: Api) => Promise<void>, adapter: FakeAdapter = 
       headers: { authorization: `Bearer ${KEY}`, ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
       ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
     });
+  const login: Api["login"] = async (username, password) => {
+    const response = await call("POST", "/v1/auth/login", { username, password }, { authorization: "" });
+    assert.equal(response.status, 201, username);
+    return ((await response.json()) as { token: string }).token;
+  };
   try {
-    await run({ ctx, adapter, logged, logs, call, submit: (body) => call("POST", "/v1/jobs", body), json: async (response) => (await response).json() as never });
+    await run({ ctx, adapter, logged, logs, call, submit: (body) => call("POST", "/v1/jobs", body), json: async (response) => (await response).json() as never, login });
   } finally {
     await app.close();
   }
@@ -622,6 +647,149 @@ describe("POST /v1/jobs/:id/stream-ticket", () => {
     await withApi(async (api) => {
       assert.equal((await api.call("POST", "/v1/jobs/ghost/stream-ticket")).status, 404);
     });
+  });
+});
+
+/**
+ * `job.reportPath` is the run's report *folder* (`reports/scenario-run-<stamp>/`, what
+ * `findRunReport` in src/adapters/detox/run-report.ts actually returns), never the HTML file
+ * itself — found by review: an earlier version of these tests injected a `reportPath` that was
+ * already a file, which never exercises the real shape and let a directory-vs-file bug (streaming
+ * a directory crashes the whole process with an unhandled EISDIR, confirmed by reproduction) pass
+ * 539/539 green. This always builds the real folder shape instead.
+ */
+function reportFolder(html: string): string {
+  const dir = path.join(scratchDir(), "scenario-run-regression");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "report.html"), html);
+  return dir;
+}
+
+describe("GET /v1/jobs/:id/report (STA-54)", () => {
+  it("streams the HTML report for a finished job with one, over the normal Authorization", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      await api.adapter.executor.finish(job.id, { ...OK, reportPath: reportFolder("<html><body>ok</body></html>") });
+
+      const response = await api.call("GET", `/v1/jobs/${job.id}/report`);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+      assert.equal(await response.text(), "<html><body>ok</body></html>");
+    });
+  });
+
+  it("builds reportPath the same way the real Detox adapter does (findRunReport), end to end", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      const catalogDir = scratchDir();
+      const reportsRoot = path.join(catalogDir, "reports");
+      const runDir = path.join(reportsRoot, "scenario-run-2026-01-01T00-00-00-000Z");
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, "report.html"), "<p>real shape</p>");
+      const { findRunReport } = await import("../src/adapters/detox/run-report");
+      const reportPath = findRunReport(catalogDir, 0);
+      assert.equal(reportPath, runDir, "sanity check: this is exactly what the real adapter would set as job.reportPath");
+      await api.adapter.executor.finish(job.id, { ...OK, reportPath });
+
+      const response = await api.call("GET", `/v1/jobs/${job.id}/report`);
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), "<p>real shape</p>");
+    });
+  });
+
+  it("answers 404, not a crash, for a reportPath folder with no report.html inside it", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      const emptyFolder = scratchDir(); // a real directory, like job.reportPath always is — just missing the file
+      await api.adapter.executor.finish(job.id, { ...OK, reportPath: emptyFolder });
+      assert.equal((await api.call("GET", `/v1/jobs/${job.id}/report`)).status, 404);
+    });
+  });
+
+  it("answers 404 for a job with no report, and for an unknown job", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      await api.adapter.executor.finish(job.id, OK);
+      assert.equal((await api.call("GET", `/v1/jobs/${job.id}/report`)).status, 404);
+      assert.equal((await api.call("GET", "/v1/jobs/ghost/report")).status, 404);
+    });
+  });
+
+  it("answers 401 with neither a normal Authorization header nor a ticket", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      await api.adapter.executor.finish(job.id, { ...OK, reportPath: reportFolder("ok") });
+      assert.equal((await api.call("GET", `/v1/jobs/${job.id}/report`, undefined, { authorization: "" })).status, 401);
+    });
+  });
+
+  it("lets a web session with the right role reach it, same as the normal API key", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      await api.adapter.executor.finish(job.id, { ...OK, reportPath: reportFolder("<p>session</p>") });
+      const token = await api.login("mobile-user", MOBILE_PASSWORD);
+      const response = await api.call("GET", `/v1/jobs/${job.id}/report`, undefined, { authorization: `Bearer ${token}` });
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), "<p>session</p>");
+    });
+  });
+
+  it("rejects a web session with the wrong role, same as every other route on this controller", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      await api.adapter.executor.finish(job.id, { ...OK, reportPath: reportFolder("ok") });
+      const token = await api.login("cypress-user", CYPRESS_PASSWORD);
+      const response = await api.call("GET", `/v1/jobs/${job.id}/report`, undefined, { authorization: `Bearer ${token}` });
+      assert.equal(response.status, 403);
+    });
+  });
+
+  it("accepts a valid ticket scoped to this exact job, with no Authorization header at all", async () => {
+    const tickets = new ArtifactTickets();
+    await withApi(
+      async (api) => {
+        const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+        await api.adapter.executor.finish(job.id, { ...OK, reportPath: reportFolder("<p>hi</p>") });
+
+        const ticket = tickets.issue(job.id);
+        const response = await api.call("GET", `/v1/jobs/${job.id}/report?ticket=${ticket}`, undefined, { authorization: "" });
+        assert.equal(response.status, 200);
+        assert.equal(await response.text(), "<p>hi</p>");
+      },
+      fakeAdapter("detox", ["devices"]),
+      tickets,
+    );
+  });
+
+  it("rejects a ticket issued for a different job", async () => {
+    const tickets = new ArtifactTickets();
+    await withApi(
+      async (api) => {
+        const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+        await api.adapter.executor.finish(job.id, { ...OK, reportPath: reportFolder("ok") });
+
+        const otherTicket = tickets.issue("some-other-job");
+        const response = await api.call("GET", `/v1/jobs/${job.id}/report?ticket=${otherTicket}`, undefined, { authorization: "" });
+        assert.equal(response.status, 401);
+      },
+      fakeAdapter("detox", ["devices"]),
+      tickets,
+    );
+  });
+
+  it("a report ticket does not work on a different route (/log), which has no ArtifactAccessGuard", async () => {
+    const tickets = new ArtifactTickets();
+    await withApi(
+      async (api) => {
+        const job = await api.json<JobBody>(api.submit({ project: "detox", ref: "main", target: "t" }));
+        const ticket = tickets.issue(job.id);
+        const response = await api.call("GET", `/v1/jobs/${job.id}/log?ticket=${ticket}`, undefined, { authorization: "" });
+        assert.equal(response.status, 401);
+        await api.adapter.executor.finish(job.id, OK);
+      },
+      fakeAdapter("detox", ["devices"]),
+      tickets,
+    );
   });
 });
 

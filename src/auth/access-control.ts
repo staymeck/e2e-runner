@@ -1,6 +1,8 @@
-import { SetMetadata } from "@nestjs/common";
+import { ExecutionContext, ForbiddenException, SetMetadata } from "@nestjs/common";
+import type { Reflector } from "@nestjs/core";
 import type { Request } from "express";
 import type { WebRole } from "../config/service-config";
+import type { WebUser } from "./web-users";
 
 const BEARER = /^Bearer\s+(\S+)$/i;
 
@@ -19,7 +21,12 @@ declare module "express" {
 }
 
 export const IS_PUBLIC_KEY = "e2e:public";
-/** Marks a route reachable with no credential at all — only the login route needs this. */
+/**
+ * Skips the global `AuthGuard`. Either the route is reachable with no credential at all (only the
+ * login route needs that), or it substitutes its own guard via `@UseGuards(...)` that enforces an
+ * equivalent-or-narrower policy `AuthGuard` cannot express alone — e.g. `ArtifactAccessGuard`, which
+ * accepts `AuthGuard`'s own credentials too, plus a job-scoped ticket for a caller with neither.
+ */
 export const Public = (): MethodDecorator => SetMetadata(IS_PUBLIC_KEY, true);
 
 export const ROLES_KEY = "e2e:roles";
@@ -29,3 +36,16 @@ export const ROLES_KEY = "e2e:roles";
  * existed, so the CLI and n8n integrations are untouched.
  */
 export const Roles = (...roles: readonly WebRole[]): MethodDecorator & ClassDecorator => SetMetadata(ROLES_KEY, roles);
+
+/**
+ * Shared by `AuthGuard` and `ArtifactAccessGuard`: a web session reaching a `@Roles(...)`-restricted
+ * route must have one of those roles, or be an admin — a service-key request never calls this (it is
+ * always full-access, checked by its caller before this). Kept in one place so the two guards' role
+ * policy cannot silently diverge from each other.
+ */
+export function enforceRole(reflector: Reflector, context: ExecutionContext, user: WebUser): void {
+  const roles = reflector.getAllAndOverride<WebRole[]>(ROLES_KEY, [context.getHandler(), context.getClass()]);
+  if (roles && roles.length > 0 && user.role !== "admin" && !roles.includes(user.role)) {
+    throw new ForbiddenException("Your role cannot access this resource");
+  }
+}

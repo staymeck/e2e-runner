@@ -8,6 +8,7 @@ import { CliApkStatusChecker } from "./adapters/detox/apk-status-checker";
 import { CliDeviceChecker } from "./adapters/detox/device-checker";
 import { CliScenarioLister } from "./adapters/detox/scenario-lister";
 import { createApp } from "./app";
+import { ArtifactTickets } from "./auth/artifact-ticket";
 import { loadConfig } from "./config/load-config";
 import { AdapterRegistry } from "./core/adapter";
 import { JobEnqueuer } from "./core/job-enqueuer";
@@ -26,6 +27,8 @@ const JOB_LOGS_SUBDIR = "logs";
 
 const SHUTDOWN_DRAIN_MS = 10_000;
 const DEVICE_RECHECK_INTERVAL_MS = 15_000;
+/** Once a day is plenty against ArtifactTickets' 30-day TTL — this only trims entries the lazy, issue-triggered sweep hasn't gotten to yet. */
+const ARTIFACT_TICKET_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 async function main(): Promise<void> {
   const logger = createLogger();
@@ -59,15 +62,23 @@ async function main(): Promise<void> {
       ),
     );
   }
+  // Shared with the API layer below: the scheduler issues a ticket the moment a finished job has a
+  // report, and ArtifactAccessGuard later verifies the same ticket against the same instance.
+  const artifactTickets = new ArtifactTickets(undefined, ARTIFACT_TICKET_SWEEP_INTERVAL_MS);
   // Nothing else wakes the scheduler for a job that canStart is blocking only on device connectivity
   // (no submission, no other job finishing) — this is what notices a device reconnecting on its own.
-  const scheduler = new JobScheduler(store, adapters, logger, { recheckIntervalMs: DEVICE_RECHECK_INTERVAL_MS });
+  const scheduler = new JobScheduler(store, adapters, logger, {
+    recheckIntervalMs: DEVICE_RECHECK_INTERVAL_MS,
+    onFinished: (job) => {
+      if (job.reportPath) artifactTickets.issue(job.id);
+    },
+  });
   await scheduler.reconcile();
 
   const jobs = new JobService(config.projects, adapters, new JobEnqueuer(store, adapters, scheduler), scheduler, store);
   // Running jobs are cancelled and given a moment to end before the database goes away.
   const onShutdown = [() => scheduler.shutdown(SHUTDOWN_DRAIN_MS), () => db.close()];
-  const app = await createApp(config, { jobs, logs: jobLog, diagnostics: logger, onShutdown }, new PinoNestLogger(logger));
+  const app = await createApp(config, { jobs, logs: jobLog, diagnostics: logger, onShutdown, artifactTickets }, new PinoNestLogger(logger));
   await app.listen(config.server.port, config.server.host);
   logger.info({ host: config.server.host, port: config.server.port, projects: config.projects.map((p) => p.id) }, "e2e-runner listening");
 }

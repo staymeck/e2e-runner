@@ -40,6 +40,7 @@ export interface JobView {
   readonly phases: readonly PhaseView[];
   /** Beyond "something else is using its resource" — e.g. a job waiting on a disconnected device. */
   readonly waitingReason: string | null;
+  readonly hasReport: boolean;
 }
 
 /** Mirrors src/core/adapter.ts's `DeviceStatus`. */
