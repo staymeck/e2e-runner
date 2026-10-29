@@ -76,6 +76,8 @@ export interface Job {
   readonly pid: number | null;
   readonly logPath: string | null;
   readonly reportPath: string | null;
+  /** Already validated by whoever queued the job (https, allowlisted host); core only stores and forwards it. Null when none was given. */
+  readonly webhookUrl: string | null;
   readonly phases: readonly JobPhase[];
 }
 
@@ -89,6 +91,7 @@ export interface NewJob {
   readonly locks: readonly string[];
   readonly phases: readonly string[];
   readonly retryOf?: string;
+  readonly webhookUrl?: string;
 }
 
 export interface JobFilter {

@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
+import * as http from "node:http";
 import { describe, it } from "node:test";
 import type { Job, JobPhase } from "../src/core/job";
 import { postJobWebhookEvent } from "../src/webhooks/dispatch";
 
 /**
- * No real outbound POST here (nothing is wired to call this from the scheduler yet — see
- * docs/design.md), and `assertWebhookDestinationSafe` blocks 127.0.0.1 on purpose, so a local test
- * server cannot stand in for a receiver. What *is* real and network-light: a reserved, guaranteed-to-
- * never-resolve `.invalid` hostname (RFC 2606), which exercises the whole failure path — the guard,
- * the diagnostics hook, and the returned result — without a real outbound request ever happening.
+ * `postJobWebhookEvent` tested directly, independent of who calls it (`notify-on-finish.test.ts`
+ * covers the scheduler-wired path, STA-35). `assertWebhookDestinationSafe` blocks 127.0.0.1 on
+ * purpose, so a local test server cannot stand in for a receiver — what *is* real and network-light:
+ * a reserved, guaranteed-to-never-resolve `.invalid` hostname (RFC 2606), which exercises the whole
+ * failure path — the guard, the diagnostics hook, and the returned result — without a real outbound
+ * request ever happening.
  */
 function job(overrides: Partial<Job> = {}): Job {
   const phase: JobPhase = { position: 0, name: "scenario", status: "running", exitCode: null, signal: null, outcome: null, startedAt: null, finishedAt: null };
@@ -33,6 +35,7 @@ function job(overrides: Partial<Job> = {}): Job {
     pid: null,
     logPath: null,
     reportPath: null,
+    webhookUrl: null,
     phases: [phase],
     ...overrides,
   };
@@ -82,5 +85,30 @@ describe("postJobWebhookEvent", () => {
     assert.equal(result.ok, false);
     assert.ok(!result.ok && /disabled|not in E2E_WEBHOOK_SUBSCRIBERS/i.test(result.error));
     assert.equal(warnings.length, 1, "a failure must still be reported even when it never reached DNS");
+  });
+
+  /**
+   * SSRF-via-redirect (found by review, STA-35): `assertWebhookDestinationSafe` only validates the
+   * host/IP of the URL actually dispatched to — a fetch that auto-follows a 3xx (the default) would
+   * send the signed body wherever an *otherwise-allowed* host's `Location` header points, entirely
+   * unchecked. Fixed with `redirect: "manual"` in dispatch.ts; the assertion below pins down the exact
+   * platform contract that fix depends on, since `postJobWebhookEvent` itself cannot be exercised
+   * against a local server here (its own anti-SSRF guard blocks 127.0.0.1 on purpose, by design).
+   */
+  it("fetch with redirect: manual surfaces the 3xx itself, never follows it — the exact contract the anti-SSRF fix relies on", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(302, { Location: "http://169.254.169.254/latest/meta-data/" });
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const response = await fetch(`http://127.0.0.1:${port}/`, { method: "POST", redirect: "manual" });
+      assert.equal(response.status, 302);
+      assert.equal(response.ok, false, "dispatch.ts's existing `!response.ok` check is what turns this into a reported failure");
+      assert.equal(response.headers.get("location"), "http://169.254.169.254/latest/meta-data/");
+    } finally {
+      server.close();
+    }
   });
 });

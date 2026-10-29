@@ -4,10 +4,9 @@ import { getSubscriberSecrets, hasWebhookSubscribers, parseWebhookSubscribers, t
 
 /**
  * Ported from the orchestrator's `api/webhook/url-guard.ts`. One real change: it threw Nest's
- * `BadRequestException` directly; this module has no business knowing about the HTTP framework
- * (nothing here is wired into a controller yet — that is STA-35's job), so it throws its own error
- * instead. Whoever calls this from an API route maps it to 400, the same way every other domain
- * error in this service already is.
+ * `BadRequestException` directly; this module has no business knowing about the HTTP framework, so it
+ * throws its own error instead — `request-parsing.ts`'s `parseSubmit` is the caller (STA-35), and
+ * `DomainExceptionFilter` maps it to 400, the same way every other domain error in this service already is.
  */
 export class WebhookUrlNotAllowedError extends Error {
   constructor(message: string) {

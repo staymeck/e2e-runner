@@ -117,6 +117,15 @@ describe("SqliteJobStore.create and get", () => {
     assert.ok(b.seq > a.seq);
   });
 
+  it("persists webhookUrl, and leaves it null when none is given (STA-35)", () => {
+    const withUrl = ctx.store.create(newJob({ webhookUrl: "https://n8n.example.com/hook" }));
+    assert.equal(withUrl.webhookUrl, "https://n8n.example.com/hook");
+    assert.equal(ctx.store.get(withUrl.id)?.webhookUrl, "https://n8n.example.com/hook");
+
+    const withoutUrl = ctx.store.create(newJob());
+    assert.equal(withoutUrl.webhookUrl, null);
+  });
+
   it("keeps parameters of any JSON shape, and a job without any", () => {
     assert.equal(ctx.store.create(newJob({ params: undefined })).params, null);
     assert.deepEqual(ctx.store.create(newJob({ params: { a: [1, { b: "c" }], d: null } })).params, { a: [1, { b: "c" }], d: null });

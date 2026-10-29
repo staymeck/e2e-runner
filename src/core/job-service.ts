@@ -38,6 +38,8 @@ export interface SubmitJob {
   readonly kind?: string;
   readonly target: string;
   readonly params?: unknown;
+  /** Already validated (https, allowlisted host) by the caller — `JobService` only ever forwards it. */
+  readonly webhookUrl?: string;
 }
 
 function hasParentSegment(target: string): boolean {
@@ -80,7 +82,15 @@ export class JobService {
     const sha = await adapter.refs.pin(ref);
     try {
       if (!COMMIT_SHA.test(sha)) throw new Error(`The adapter for "${input.project}" returned an invalid commit`);
-      return this.enqueuer.enqueue({ project: input.project, kind, ref, sha, target: input.target, params });
+      return this.enqueuer.enqueue({
+        project: input.project,
+        kind,
+        ref,
+        sha,
+        target: input.target,
+        params,
+        ...(input.webhookUrl === undefined ? {} : { webhookUrl: input.webhookUrl }),
+      });
     } catch (error) {
       // Nothing was queued: do not leave the commit protected for a job that does not exist.
       await adapter.refs.release(sha).catch(() => undefined);
@@ -103,11 +113,11 @@ export class JobService {
   }
 
   /**
-   * Queues a new job with the original's project, kind, branch, target and parameters, pointed at the
-   * exact same commit (never re-pinned: a retry proves nothing about the branch's tip today). Only a
-   * finished job may be retried; `get` gives the clearer JobNotFoundError for a missing one, and the
-   * store's own `assertRetryable` (shared with every other caller of `create`) is the single place that
-   * enforces "finished", so that rule can never drift between the two.
+   * Queues a new job with the original's project, kind, branch, target, parameters and webhookUrl,
+   * pointed at the exact same commit (never re-pinned: a retry proves nothing about the branch's tip
+   * today). Only a finished job may be retried; `get` gives the clearer JobNotFoundError for a missing
+   * one, and the store's own `assertRetryable` (shared with every other caller of `create`) is the
+   * single place that enforces "finished", so that rule can never drift between the two.
    *
    * Does ask `checkReady` again, unlike `isBranchAllowed`/`validateRequest`/`kinds` (never re-checked:
    * see the design doc for why "same exact job" means those stay frozen at the original's values).
@@ -127,6 +137,7 @@ export class JobService {
       target: original.target,
       params: original.params,
       retryOf: id,
+      ...(original.webhookUrl === null ? {} : { webhookUrl: original.webhookUrl }),
     });
   }
 

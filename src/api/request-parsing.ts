@@ -1,9 +1,11 @@
 import { JOB_STATUSES, type JobFilter, type JobPage, type JobStatus } from "../core/job";
 import { InvalidJobRequestError } from "../core/job-request";
 import type { SubmitJob } from "../core/job-service";
+import { assertWebhookUrlAllowed } from "../webhooks/url-guard";
+import type { WebhookSubscriberSecrets } from "../webhooks/subscribers";
 
 const MAX_TEXT = 255;
-const KNOWN_BODY_KEYS: readonly string[] = ["project", "ref", "kind", "target", "params"];
+const KNOWN_BODY_KEYS: readonly string[] = ["project", "ref", "kind", "target", "params", "webhookUrl"];
 
 function text(value: unknown, field: string, required: boolean): string | undefined {
   if (value === undefined || value === null) {
@@ -15,8 +17,14 @@ function text(value: unknown, field: string, required: boolean): string | undefi
   return value;
 }
 
-/** Validates the body of POST /v1/jobs. Unknown fields are rejected so a typo is not silently ignored. */
-export function parseSubmit(body: unknown): SubmitJob {
+/**
+ * Validates the body of POST /v1/jobs. Unknown fields are rejected so a typo is not silently
+ * ignored. `webhookSubscribers` is the one piece this otherwise-pure parser needs from outside: the
+ * same sync allowlist check `assertWebhookUrlAllowed` already does at submit time in the orchestrator
+ * it was ported from (`assertWebhookDestinationSafe`'s own DNS re-check happens again later, right
+ * before the actual send — see that function's own doc).
+ */
+export function parseSubmit(body: unknown, webhookSubscribers: ReadonlyMap<string, WebhookSubscriberSecrets>): SubmitJob {
   if (typeof body !== "object" || body === null || Array.isArray(body)) throw new InvalidJobRequestError("the body must be a JSON object");
   const fields = body as Record<string, unknown>;
   for (const key of Object.keys(fields)) {
@@ -24,12 +32,15 @@ export function parseSubmit(body: unknown): SubmitJob {
   }
   const ref = text(fields.ref, "ref", false);
   const kind = text(fields.kind, "kind", false);
+  const webhookUrl = text(fields.webhookUrl, "webhookUrl", false);
+  if (webhookUrl !== undefined) assertWebhookUrlAllowed(webhookUrl, webhookSubscribers);
   return {
     project: text(fields.project, "project", true) as string,
     target: text(fields.target, "target", true) as string,
     ...(ref === undefined ? {} : { ref }),
     ...(kind === undefined ? {} : { kind }),
     ...(fields.params === undefined ? {} : { params: fields.params }),
+    ...(webhookUrl === undefined ? {} : { webhookUrl }),
   };
 }
 
