@@ -1,11 +1,17 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ApkScenarioStatus } from "../../core/adapter";
+import type { ApkRowBuildStatus, ApkScenarioStatus } from "../../core/adapter";
 import { CommandFailedError, type CommandRunner } from "../../core/command-runner";
 import { orchestratorBin } from "./scenario-lister";
 
-export const SUPPORTED_APK_STATUS_CONTRACT_VERSION = 1;
+/**
+ * v1: {app, branch, ready, customId?}. v2 (orchestrator's apk-catalog) added `status` — accepted here
+ * too, but still optional on the parsed row: an older catalog branch can report v1, and `status` must
+ * not be invented for it (see ApkRowStatus's own comment in core/adapter.ts).
+ */
+export const SUPPORTED_APK_STATUS_CONTRACT_VERSIONS = [1, 2] as const;
+const VALID_ROW_STATUSES: readonly ApkRowBuildStatus[] = ["not_compiled", "in_progress", "compiled", "failed"];
 const STATUS_TIMEOUT_MS = 30_000;
 
 /** The catalog's installed orchestrator is too old to report APK status (no `apk-status` command). */
@@ -23,11 +29,13 @@ export class ApkStatusReadError extends Error {
   }
 }
 
-/** Accepts exactly contract version 1; unknown fields are ignored, an unknown version is refused. */
+/** Accepts contract version 1 or 2 (see SUPPORTED_APK_STATUS_CONTRACT_VERSIONS); unknown fields are ignored, an unknown version is refused. */
 export function parseApkStatus(document: unknown): ApkScenarioStatus {
   const root = document as { contractVersion?: unknown; scenarioId?: unknown; kind?: unknown; apps?: unknown } | null;
-  if (root?.contractVersion !== SUPPORTED_APK_STATUS_CONTRACT_VERSION) {
-    throw new ApkStatusReadError(`Unsupported apk-status contract version: ${String(root?.contractVersion)} (this service reads ${SUPPORTED_APK_STATUS_CONTRACT_VERSION})`);
+  if (!root || !SUPPORTED_APK_STATUS_CONTRACT_VERSIONS.includes(root.contractVersion as never)) {
+    throw new ApkStatusReadError(
+      `Unsupported apk-status contract version: ${String(root?.contractVersion)} (this service reads ${SUPPORTED_APK_STATUS_CONTRACT_VERSIONS.join(" or ")})`,
+    );
   }
   if (typeof root.scenarioId !== "string" || root.scenarioId === "") throw new ApkStatusReadError("The apk-status listing has no scenarioId");
   if (typeof root.kind !== "string" || root.kind === "") throw new ApkStatusReadError("The apk-status listing has no kind");
@@ -37,7 +45,17 @@ export function parseApkStatus(document: unknown): ApkScenarioStatus {
     if (typeof row?.app !== "string" || row.app === "") throw new ApkStatusReadError("An apk-status row has no app");
     if (typeof row.branch !== "string") throw new ApkStatusReadError(`App "${row.app}" has no branch`);
     if (typeof row.ready !== "boolean") throw new ApkStatusReadError(`App "${row.app}" has no ready flag`);
-    return { app: row.app, branch: row.branch, ready: row.ready, ...(typeof row.customId === "string" ? { customId: row.customId } : {}) };
+    // v1 has no `status` at all; a v2 row's status must be one of the four known values, not just any string.
+    if (row.status !== undefined && !VALID_ROW_STATUSES.includes(row.status as never)) {
+      throw new ApkStatusReadError(`App "${row.app}" has an unknown status: ${String(row.status)}`);
+    }
+    return {
+      app: row.app,
+      branch: row.branch,
+      ready: row.ready,
+      ...(typeof row.status === "string" ? { status: row.status as ApkRowBuildStatus } : {}),
+      ...(typeof row.customId === "string" ? { customId: row.customId } : {}),
+    };
   });
   return { scenarioId: root.scenarioId, kind: root.kind, apps };
 }

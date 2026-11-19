@@ -99,11 +99,16 @@ export interface DeviceChecker {
 
 export type Readiness = { readonly ready: true } | { readonly ready: false; readonly reason: string };
 
+/** From the orchestrator's apk-catalog (contract v2); absent on an older orchestrator's v1 payload. */
+export type ApkRowBuildStatus = "not_compiled" | "in_progress" | "compiled" | "failed";
+
 /** One APK slot in a scenario's plan, with whether it is actually built right now. */
 export interface ApkRowStatus {
   readonly app: string;
   readonly branch: string;
   readonly ready: boolean;
+  /** v1 payloads have no catalog to derive this from — omitted, not guessed. */
+  readonly status?: ApkRowBuildStatus;
   /** Batch scenarios only, carried through from the plan row when present. */
   readonly customId?: string;
 }
