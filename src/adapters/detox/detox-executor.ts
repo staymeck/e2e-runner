@@ -101,6 +101,8 @@ export class DetoxExecutor implements RunExecutor {
       if (context.signal.aborted) return failure("Cancelled before it started");
     }
 
+    if (job.kind === "run") await this.logStaleApkWarnings(job.target, workspace, say);
+
     const bin = orchestratorBin(workspace.dir);
     if (!fs.existsSync(bin)) return failure(`The catalog has no installed orchestrator (${bin} is missing)`);
 
@@ -196,6 +198,27 @@ export class DetoxExecutor implements RunExecutor {
         if (!state.exited) this.deps.host.kill(pid, "SIGKILL");
       }, this.killGraceMs);
       state.killTimer.unref();
+    }
+  }
+
+  /**
+   * Purely informational, never blocking: logs which apps (if any) are running against a build the
+   * apk-catalog can tell is behind their branch's current remote head (STA — needsUpdate). Swallows
+   * every failure (no `apkStatusChecker` configured, an old orchestrator, a network hiccup) the same
+   * way `checkReady`'s own apk-status read does — this must never fail a job over something that is
+   * explicitly a "nice to know", not a precondition.
+   */
+  private async logStaleApkWarnings(target: string, workspace: Workspace, say: (text: string) => void): Promise<void> {
+    const checker = this.deps.apkStatusChecker;
+    if (!checker) return;
+    try {
+      const status = await checker.status(workspace.dir, target);
+      const stale = (status?.apps ?? []).filter((app) => app.needsUpdate === true);
+      for (const app of stale) {
+        say(`[e2e-runner] ⚠️ ${app.app}@${app.branch} está corriendo con un build que ya no es el HEAD actual de esa rama (needsUpdate)\n`);
+      }
+    } catch {
+      // Never fails the job over this — see the method's own doc comment.
     }
   }
 

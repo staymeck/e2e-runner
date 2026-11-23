@@ -49,11 +49,17 @@ export function parseApkStatus(document: unknown): ApkScenarioStatus {
     if (row.status !== undefined && !VALID_ROW_STATUSES.includes(row.status as never)) {
       throw new ApkStatusReadError(`App "${row.app}" has an unknown status: ${String(row.status)}`);
     }
+    // needsUpdate is newer than the status field itself — an older orchestrator simply never sends
+    // it. Same lenient optional handling as status: present and non-boolean is the only error case.
+    if (row.needsUpdate !== undefined && typeof row.needsUpdate !== "boolean") {
+      throw new ApkStatusReadError(`App "${row.app}" has a non-boolean needsUpdate: ${String(row.needsUpdate)}`);
+    }
     return {
       app: row.app,
       branch: row.branch,
       ready: row.ready,
       ...(typeof row.status === "string" ? { status: row.status as ApkRowBuildStatus } : {}),
+      ...(typeof row.needsUpdate === "boolean" ? { needsUpdate: row.needsUpdate } : {}),
       ...(typeof row.customId === "string" ? { customId: row.customId } : {}),
     };
   });
