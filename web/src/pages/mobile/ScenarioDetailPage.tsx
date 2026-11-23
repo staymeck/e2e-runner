@@ -74,8 +74,12 @@ export function ScenarioDetailPage() {
   if (!scenarioId) return null;
 
   const building = activeBuilds(jobs ?? []);
+  // `undefined` is "the first apk-status fetch is still in flight" — distinct from `null` ("fetched,
+  // but failed or this project has none", which stays fail-open on purpose). Only `undefined` should
+  // hide the Apps table/action buttons behind a loader; `canRun` must not default to true during it.
+  const apkStatusLoading = apkStatus === undefined;
   const notReadyApps = (apkStatus?.apps ?? []).filter((a) => !a.ready).map((a) => a.app);
-  const canRun = apkStatus === null || notReadyApps.length === 0;
+  const canRun = !apkStatusLoading && (apkStatus === null || notReadyApps.length === 0);
 
   const onRun = async () => {
     setTriggering(true);
@@ -120,67 +124,76 @@ export function ScenarioDetailPage() {
       {ref && <p className="muted">rama: {ref}</p>}
       {error && <p className="error">{error}</p>}
 
-      {apkStatus && apkStatus.apps.length > 0 && (
+      {apkStatusLoading ? (
+        <p className="muted">Verificando estado de las apps…</p>
+      ) : (
         <>
-          <h3>Apps</h3>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>App</th>
-                <th>Rama</th>
-                <th>Estado</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {apkStatus.apps.map((row, i) => {
-                // `build-apk.py`'s `--only` matches a batch row's `customId` as well as its app name
-                // (see `expand_apk_production` in `scripts/build-apk.py`) — using the app name alone
-                // for a row that has a `customId` would recompile every row sharing that app name,
-                // not just the one clicked (a batch can use the same app on several branches/slots).
-                const rowId = row.customId ?? row.app;
-                const compiling = building.all || building.apps.has(rowId);
-                return (
-                  <tr key={`${row.app}-${row.customId ?? i}`}>
-                    <td>
-                      {row.app}
-                      {row.customId && <span className="muted"> ({row.customId})</span>}
-                    </td>
-                    <td className="mono">{row.branch}</td>
-                    <td>
-                      {compiling ? (
-                        <span className="badge badge-info">Compilando…</span>
-                      ) : row.ready ? (
-                        <span className="badge badge-success">Ready</span>
-                      ) : (
-                        <span className="badge badge-warning">Not Ready</span>
-                      )}
-                    </td>
-                    <td>
-                      <button className="btn btn-small" onClick={() => onCompile(rowId)} disabled={compiling || compilingApp !== null}>
-                        {compilingApp === rowId ? "Encolando…" : "Recompilar app"}
-                      </button>
-                    </td>
+          {apkStatus && apkStatus.apps.length > 0 && (
+            <>
+              <h3>Apps</h3>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>App</th>
+                    <th>Rama</th>
+                    <th>Estado</th>
+                    <th></th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </>
-      )}
+                </thead>
+                <tbody>
+                  {apkStatus.apps.map((row, i) => {
+                    // `build-apk.py`'s `--only` matches a batch row's `customId` as well as its app name
+                    // (see `expand_apk_production` in `scripts/build-apk.py`) — using the app name alone
+                    // for a row that has a `customId` would recompile every row sharing that app name,
+                    // not just the one clicked (a batch can use the same app on several branches/slots).
+                    const rowId = row.customId ?? row.app;
+                    const compiling = building.all || building.apps.has(rowId);
+                    return (
+                      <tr key={`${row.app}-${row.customId ?? i}`}>
+                        <td>
+                          {row.app}
+                          {row.customId && <span className="muted"> ({row.customId})</span>}
+                        </td>
+                        <td className="mono">{row.branch}</td>
+                        <td>
+                          {compiling ? (
+                            <span className="badge badge-info">Compilando…</span>
+                          ) : row.ready ? (
+                            <span className="badge badge-success">Ready</span>
+                          ) : (
+                            <span className="badge badge-warning">Not Ready</span>
+                          )}
+                          {/* Non-blocking: shown alongside Ready/Not Ready, never instead of it, and
+                              never disables "Ejecutar escenario" below. */}
+                          {row.needsUpdate && <span className="badge badge-warning"> Actualización disponible</span>}
+                        </td>
+                        <td>
+                          <button className="btn btn-small" onClick={() => onCompile(rowId)} disabled={compiling || compilingApp !== null}>
+                            {compilingApp === rowId ? "Encolando…" : "Recompilar app"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          )}
 
-      <div className="field-row field-row-spaced">
-        <button className="btn btn-primary" onClick={onRun} disabled={triggering || !canRun}>
-          {triggering ? "Encolando…" : "Ejecutar escenario"}
-        </button>
-        <button className="btn" onClick={() => onCompile()} disabled={compilingApp !== null}>
-          {compilingApp === "__all__" ? "Encolando…" : "Compilar"}
-        </button>
-      </div>
-      {!canRun && (
-        <p className="muted">
-          No se puede ejecutar: falta compilar {notReadyApps.join(", ")}.
-        </p>
+          <div className="field-row field-row-spaced">
+            <button className="btn btn-primary" onClick={onRun} disabled={triggering || !canRun}>
+              {triggering ? "Encolando…" : "Ejecutar escenario"}
+            </button>
+            <button className="btn" onClick={() => onCompile()} disabled={compilingApp !== null}>
+              {compilingApp === "__all__" ? "Encolando…" : "Compilar"}
+            </button>
+          </div>
+          {!canRun && (
+            <p className="muted">
+              No se puede ejecutar: falta compilar {notReadyApps.join(", ")}.
+            </p>
+          )}
+        </>
       )}
 
       {lastJobId && (

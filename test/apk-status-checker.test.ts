@@ -57,4 +57,37 @@ describe("parseApkStatus", () => {
     assert.throws(() => parseApkStatus(null), ApkStatusReadError);
     assert.throws(() => parseApkStatus(undefined), ApkStatusReadError);
   });
+
+  it("carries needsUpdate through when the orchestrator could determine it", () => {
+    const status = parseApkStatus({
+      contractVersion: 2,
+      scenarioId: "login",
+      kind: "step",
+      apps: [{ app: "kpmake", branch: "main", ready: true, status: "compiled", needsUpdate: true }],
+    });
+    assert.deepEqual(status.apps[0], { app: "kpmake", branch: "main", ready: true, status: "compiled", needsUpdate: true });
+  });
+
+  it("omits needsUpdate (not false) when the orchestrator did not send it — an older branch, not 'up to date'", () => {
+    const status = parseApkStatus({
+      contractVersion: 2,
+      scenarioId: "login",
+      kind: "step",
+      apps: [{ app: "kpmake", branch: "main", ready: true, status: "compiled" }],
+    });
+    assert.equal("needsUpdate" in status.apps[0]!, false);
+  });
+
+  it("rejects a non-boolean needsUpdate instead of passing it through blindly", () => {
+    assert.throws(
+      () =>
+        parseApkStatus({
+          contractVersion: 2,
+          scenarioId: "login",
+          kind: "step",
+          apps: [{ app: "kpmake", branch: "main", ready: true, needsUpdate: "yes" }],
+        }),
+      ApkStatusReadError,
+    );
+  });
 });

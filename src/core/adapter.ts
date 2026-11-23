@@ -109,6 +109,12 @@ export interface ApkRowStatus {
   readonly ready: boolean;
   /** v1 payloads have no catalog to derive this from — omitted, not guessed. */
   readonly status?: ApkRowBuildStatus;
+  /**
+   * `true`/`false` only when the orchestrator could compare a recorded build commit against the
+   * branch's current remote head; omitted ("unknown") on an older payload, a row never built with
+   * commit tracking, or a network hiccup reaching the remote. Never blocking — informational only.
+   */
+  readonly needsUpdate?: boolean;
   /** Batch scenarios only, carried through from the plan row when present. */
   readonly customId?: string;
 }

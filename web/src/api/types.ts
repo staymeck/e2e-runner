@@ -65,6 +65,11 @@ export interface ApkRowStatus {
   readonly app: string;
   readonly branch: string;
   readonly ready: boolean;
+  /**
+   * `true`/`false` only when the orchestrator could compare against the branch's current remote
+   * head; absent ("unknown") otherwise — never a reason to disable anything, purely informational.
+   */
+  readonly needsUpdate?: boolean;
   readonly customId?: string;
 }
 
