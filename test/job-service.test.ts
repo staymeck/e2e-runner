@@ -83,6 +83,20 @@ describe("JobService.submit", () => {
     await ctx.adapter.executor.finish(job.id, OK);
   });
 
+  it("defaults reportScope to \"general\" when none is given", async () => {
+    const ctx = buildService();
+    const job = await ctx.service.submit({ project: "detox", target: "t" });
+    assert.equal(job.reportScope, "general");
+    await ctx.adapter.executor.finish(job.id, OK);
+  });
+
+  it("stores a given reportScope untouched", async () => {
+    const ctx = buildService();
+    const job = await ctx.service.submit({ project: "detox", target: "t", reportScope: "job" });
+    assert.equal(job.reportScope, "job");
+    await ctx.adapter.executor.finish(job.id, OK);
+  });
+
   it("lets the adapter reject the parameters, before pinning or creating anything", async () => {
     const ctx = buildService();
     await assert.rejects(ctx.service.submit({ project: "detox", target: "t", params: { shell: "rm -rf /" } }), InvalidJobRequestError);
@@ -257,6 +271,15 @@ describe("JobService.retry", () => {
     await ctx.adapter.executor.finish(original.id, OK);
     const retried = await ctx.service.retry(original.id);
     assert.equal(retried.webhookUrl, "https://n8n.example.com/hook");
+    await ctx.adapter.executor.finish(retried.id, OK);
+  });
+
+  it("keeps the original's reportScope too", async () => {
+    const ctx = buildService();
+    const original = await ctx.service.submit({ project: "detox", target: "t", reportScope: "job" });
+    await ctx.adapter.executor.finish(original.id, OK);
+    const retried = await ctx.service.retry(original.id);
+    assert.equal(retried.reportScope, "job");
     await ctx.adapter.executor.finish(retried.id, OK);
   });
 

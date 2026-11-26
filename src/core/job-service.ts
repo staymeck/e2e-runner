@@ -9,7 +9,7 @@ import {
   type ProjectCatalog,
 } from "./adapter";
 import { isBranchAllowed } from "./branch-pattern";
-import { JobNotFoundError, type Job, type JobFilter, type JobList, type JobPage } from "./job";
+import { JobNotFoundError, type Job, type JobFilter, type JobList, type JobPage, type ReportScope } from "./job";
 import type { JobEnqueuer } from "./job-enqueuer";
 import { COMMIT_SHA, InvalidJobRequestError, RefNotAllowedError, TARGET_NAME } from "./job-request";
 import type { JobStore } from "./job-store";
@@ -40,6 +40,8 @@ export interface SubmitJob {
   readonly params?: unknown;
   /** Already validated (https, allowlisted host) by the caller — `JobService` only ever forwards it. */
   readonly webhookUrl?: string;
+  /** Defaults to `"general"` when omitted — see `ReportScope`'s own doc. */
+  readonly reportScope?: ReportScope;
 }
 
 function hasParentSegment(target: string): boolean {
@@ -89,6 +91,7 @@ export class JobService {
         sha,
         target: input.target,
         params,
+        reportScope: input.reportScope ?? "general",
         ...(input.webhookUrl === undefined ? {} : { webhookUrl: input.webhookUrl }),
       });
     } catch (error) {
@@ -137,6 +140,7 @@ export class JobService {
       target: original.target,
       params: original.params,
       retryOf: id,
+      reportScope: original.reportScope,
       ...(original.webhookUrl === null ? {} : { webhookUrl: original.webhookUrl }),
     });
   }

@@ -4,6 +4,8 @@ import { ArtifactAccessGuard } from "./api/artifact-access.guard";
 import { AuthController } from "./api/auth.controller";
 import { AuthGuard } from "./api/auth.guard";
 import { DomainExceptionFilter } from "./api/domain-exception.filter";
+import { GeneralReportAccessGuard } from "./api/general-report-access.guard";
+import { GeneralReportController } from "./api/general-report.controller";
 import { HealthController } from "./api/health.controller";
 import { JobsController } from "./api/jobs.controller";
 import { ProjectsController } from "./api/projects.controller";
@@ -14,6 +16,7 @@ import { WEB_SESSIONS, WebSessions } from "./auth/web-sessions";
 import { WEB_USER_DIRECTORY, WebUserDirectory } from "./auth/web-users";
 import type { ServiceConfig } from "./config/service-config";
 import { DIAGNOSTICS, silentDiagnostics, type Diagnostics } from "./core/diagnostics";
+import { GENERAL_REPORT_STORE, REPORT_BRANCH, type GeneralReportStore } from "./core/general-report-store";
 import { JOB_LOG_READER, type JobLogReader } from "./core/job-log";
 import { JOB_SERVICE, type JobService } from "./core/job-service";
 import { LOG_STREAM_DETACH, LogStreamShutdown, type LogStreamDetachHolder } from "./lifecycle/log-stream-shutdown";
@@ -41,6 +44,10 @@ export interface AppDependencies {
    * send time (STA-35's own `onFinished` wiring in `main.ts`) — this is only for the submit-time check.
    */
   readonly webhookSubscribers?: ReadonlyMap<string, WebhookSubscriberSecrets>;
+  /** Backs `GET /v1/report/general[/html]`. Defaults to an always-empty store for a caller (e.g. a test) that does not care about it. */
+  readonly generalReportStore?: GeneralReportStore;
+  /** `config.reportBranch`, forwarded as-is — see `ServiceConfig`'s own doc. Defaults to "master". */
+  readonly reportBranch?: string;
 }
 
 @Module({})
@@ -48,7 +55,7 @@ export class AppModule {
   static forRoot(config: ServiceConfig, dependencies: AppDependencies): DynamicModule {
     return {
       module: AppModule,
-      controllers: [HealthController, AuthController, ProjectsController, JobsController],
+      controllers: [HealthController, AuthController, ProjectsController, JobsController, GeneralReportController],
       providers: [
         { provide: API_KEY_VERIFIER, useValue: new ApiKeyVerifier(config.apiKeys) },
         { provide: WEB_USER_DIRECTORY, useValue: new WebUserDirectory(config.webUsers) },
@@ -58,6 +65,8 @@ export class AppModule {
         { provide: STREAM_TICKETS, useValue: new StreamTickets() },
         { provide: ARTIFACT_TICKETS, useValue: dependencies.artifactTickets ?? new ArtifactTickets() },
         { provide: WEBHOOK_SUBSCRIBERS, useValue: dependencies.webhookSubscribers ?? parseWebhookSubscribers() },
+        { provide: GENERAL_REPORT_STORE, useValue: dependencies.generalReportStore ?? { recordFinished: () => undefined, list: () => [] } },
+        { provide: REPORT_BRANCH, useValue: dependencies.reportBranch ?? config.reportBranch },
         { provide: DIAGNOSTICS, useValue: dependencies.diagnostics ?? silentDiagnostics },
         { provide: SHUTDOWN_CALLBACKS, useValue: dependencies.onShutdown ?? [] },
         ShutdownHooks,
@@ -66,6 +75,7 @@ export class AppModule {
         { provide: APP_GUARD, useClass: AuthGuard },
         { provide: APP_FILTER, useClass: DomainExceptionFilter },
         ArtifactAccessGuard,
+        GeneralReportAccessGuard,
       ],
     };
   }

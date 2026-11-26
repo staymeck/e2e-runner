@@ -8,3 +8,4 @@ dist/
 data/
 *.sqlite
 *.sqlite-journal
+.vite

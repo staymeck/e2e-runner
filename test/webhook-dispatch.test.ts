@@ -36,6 +36,7 @@ function job(overrides: Partial<Job> = {}): Job {
     logPath: null,
     reportPath: null,
     webhookUrl: null,
+    reportScope: "general",
     phases: [phase],
     ...overrides,
   };

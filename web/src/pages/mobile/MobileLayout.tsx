@@ -10,11 +10,11 @@ export function MobileLayout() {
         <NavLink to="/mobile/escenarios" className="navlink">
           Escenarios
         </NavLink>
-        <NavLink to="/mobile/jobs" className="navlink">
-          Jobs
+        <NavLink to="/mobile/historial" className="navlink">
+          Historial
         </NavLink>
-        <NavLink to="/mobile/reportes" className="navlink">
-          Reportes
+        <NavLink to="/mobile/status" className="navlink">
+          Status
         </NavLink>
         <NavLink to="/mobile/dispositivos" className="navlink">
           Dispositivos

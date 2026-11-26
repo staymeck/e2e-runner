@@ -1,5 +1,5 @@
 import type { AdapterLookup } from "./adapter";
-import type { Job } from "./job";
+import type { Job, ReportScope } from "./job";
 import type { JobStore } from "./job-store";
 import type { QueueListener } from "./queue-listener";
 
@@ -13,6 +13,7 @@ export interface EnqueueRequest {
   readonly params?: unknown;
   readonly retryOf?: string;
   readonly webhookUrl?: string;
+  readonly reportScope?: ReportScope;
 }
 
 /**
@@ -39,6 +40,7 @@ export class JobEnqueuer {
       phases: [...adapter.executor.plan({ kind: request.kind, target: request.target, params: request.params })],
       ...(request.retryOf === undefined ? {} : { retryOf: request.retryOf }),
       ...(request.webhookUrl === undefined ? {} : { webhookUrl: request.webhookUrl }),
+      ...(request.reportScope === undefined ? {} : { reportScope: request.reportScope }),
     });
     this.listener.kick();
     // The queue may have started it already: return what is true now, not the snapshot from creation.

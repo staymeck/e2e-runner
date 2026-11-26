@@ -8,7 +8,10 @@ import { usePolling } from "../../usePolling";
 const POLL_MS = 3000;
 const STATUS_FILTERS: readonly JobStatus[] = ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"];
 
-export function JobsPage() {
+/** Replaces the old separate Jobs/Reportes tabs: this lists every job; opening one (JobLogPage) also
+ * offers its logs, a re-run, and its own report — see JobLogPage's own doc for why those three live
+ * together there instead of as separate pages. */
+export function HistorialPage() {
   const [jobs, setJobs] = useState<JobView[] | null>(null);
   const [ref, setRef] = useState("");
   const [status, setStatus] = useState<JobStatus | "">("");
@@ -51,7 +54,7 @@ export function JobsPage() {
   return (
     <div className="panel">
       <div className="panel-header">
-        <h2>Jobs</h2>
+        <h2>Historial</h2>
       </div>
       <div className="field-row">
         <label>

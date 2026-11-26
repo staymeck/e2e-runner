@@ -32,6 +32,7 @@ function job(overrides: Partial<Job> = {}): Job {
     logPath: null,
     reportPath: null,
     webhookUrl: null,
+    reportScope: "general",
     phases: [phase()],
     ...overrides,
   };
@@ -47,30 +48,38 @@ describe("toWebhookJobType", () => {
 
 describe("buildJobLinks", () => {
   it("builds job and log links from the base URL, without a token (unlike the orchestrator's links)", () => {
-    assert.deepEqual(buildJobLinks("https://e2e.example.com", "job-1"), {
+    assert.deepEqual(buildJobLinks("https://e2e.example.com", "job-1", "job"), {
       job: "https://e2e.example.com/v1/jobs/job-1",
       log: "https://e2e.example.com/v1/jobs/job-1/log",
     });
   });
 
   it("tolerates a trailing slash on the base URL", () => {
-    assert.deepEqual(buildJobLinks("https://e2e.example.com/", "job-1"), {
+    assert.deepEqual(buildJobLinks("https://e2e.example.com/", "job-1", "job"), {
       job: "https://e2e.example.com/v1/jobs/job-1",
       log: "https://e2e.example.com/v1/jobs/job-1/log",
     });
   });
 
-  it("adds report with ?ticket= only when a report ticket is given (STA-54)", () => {
-    assert.deepEqual(buildJobLinks("https://e2e.example.com", "job-1", "the-ticket"), {
+  it("scope \"job\" adds report with ?ticket= from reportTicket only when one is given (STA-54)", () => {
+    assert.deepEqual(buildJobLinks("https://e2e.example.com", "job-1", "job", "the-ticket"), {
       job: "https://e2e.example.com/v1/jobs/job-1",
       log: "https://e2e.example.com/v1/jobs/job-1/log",
       report: "https://e2e.example.com/v1/jobs/job-1/report?ticket=the-ticket",
     });
-    assert.ok(!("report" in buildJobLinks("https://e2e.example.com", "job-1")), "no bare, unusable report link without a ticket");
+    assert.ok(!("report" in buildJobLinks("https://e2e.example.com", "job-1", "job")), "no bare, unusable report link without a ticket");
+  });
+
+  it("scope \"general\" (the default) adds report pointing at the general report's public page, from generalReportTicket", () => {
+    assert.deepEqual(buildJobLinks("https://e2e.example.com", "job-1", "general", "the-job-ticket", "the-general-ticket"), {
+      job: "https://e2e.example.com/v1/jobs/job-1",
+      log: "https://e2e.example.com/v1/jobs/job-1/log",
+      report: "https://e2e.example.com/v1/report/general/html?ticket=the-general-ticket",
+    });
   });
 
   it("encodes a ticket that needs it", () => {
-    assert.equal(buildJobLinks("https://e2e.example.com", "job-1", "a+b/c").report, "https://e2e.example.com/v1/jobs/job-1/report?ticket=a%2Bb%2Fc");
+    assert.equal(buildJobLinks("https://e2e.example.com", "job-1", "job", "a+b/c").report, "https://e2e.example.com/v1/jobs/job-1/report?ticket=a%2Bb%2Fc");
   });
 });
 
@@ -111,11 +120,27 @@ describe("buildWebhookPayload", () => {
     assert.equal(stillRunning.durationMs, null);
   });
 
-  it("forwards reportTicket into links.report, and leaves it out when none is given", () => {
-    const withTicket = buildWebhookPayload({ event: "finished", job: job(), phase: "scenario", phaseIndex: 0, baseUrl: "https://e2e.example.com", reportTicket: "the-ticket" });
-    assert.equal(withTicket.links.report, "https://e2e.example.com/v1/jobs/job-1/report?ticket=the-ticket");
+  it("forwards generalReportTicket into links.report by default (job.reportScope is \"general\")", () => {
+    const withTicket = buildWebhookPayload({ event: "finished", job: job(), phase: "scenario", phaseIndex: 0, baseUrl: "https://e2e.example.com", generalReportTicket: "the-general-ticket" });
+    assert.equal(withTicket.links.report, "https://e2e.example.com/v1/report/general/html?ticket=the-general-ticket");
 
     const withoutTicket = buildWebhookPayload({ event: "finished", job: job(), phase: "scenario", phaseIndex: 0, baseUrl: "https://e2e.example.com" });
+    assert.ok(!("report" in withoutTicket.links));
+  });
+
+  it("forwards reportTicket into links.report when job.reportScope is \"job\", ignoring generalReportTicket", () => {
+    const withTicket = buildWebhookPayload({
+      event: "finished",
+      job: job({ reportScope: "job" }),
+      phase: "scenario",
+      phaseIndex: 0,
+      baseUrl: "https://e2e.example.com",
+      reportTicket: "the-ticket",
+      generalReportTicket: "the-general-ticket",
+    });
+    assert.equal(withTicket.links.report, "https://e2e.example.com/v1/jobs/job-1/report?ticket=the-ticket");
+
+    const withoutTicket = buildWebhookPayload({ event: "finished", job: job({ reportScope: "job" }), phase: "scenario", phaseIndex: 0, baseUrl: "https://e2e.example.com" });
     assert.ok(!("report" in withoutTicket.links));
   });
 
