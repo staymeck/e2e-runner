@@ -45,7 +45,9 @@ async function withApi(run: (api: Api) => Promise<void>): Promise<void> {
     return row;
   };
   try {
-    await run({ tickets, call, finishedJob, record: (job) => generalReportStore.recordFinished(job) });
+    // Mirrors main.ts's onFinished: a "run" job's report always names exactly one scenario (its own target).
+    const record: Api["record"] = (job) => generalReportStore.recordFinished(job, job.outcome ? [{ target: job.target, outcome: job.outcome }] : []);
+    await run({ tickets, call, finishedJob, record });
   } finally {
     await app.close();
   }

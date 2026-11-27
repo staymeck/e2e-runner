@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Job, JobPhase, NewJob } from "../src/core/job";
+import type { FinishedScenario } from "../src/core/general-report-store";
+import type { Job, JobPhase, NewJob, Outcome } from "../src/core/job";
 import { openMemoryDatabase } from "../src/db/open-database";
 import { SqliteGeneralReportStore } from "../src/db/sqlite-general-report-store";
 import { SqliteJobStore } from "../src/db/sqlite-job-store";
@@ -17,6 +18,11 @@ function finished(row: Job, overrides: Partial<Job> = {}): Job {
   return { ...row, status: "succeeded", outcome: "success", finishedAt: "2026-01-01T00:00:00.000Z", phases: [phase], ...overrides };
 }
 
+/** Shorthand for a single-scenario `recordFinished` call, as a "run" job's own report would produce. */
+function one(target: string, outcome: Outcome = "success"): FinishedScenario[] {
+  return [{ target, outcome }];
+}
+
 describe("SqliteGeneralReportStore", () => {
   it("records a finished job and lists it back, scoped to (project, branch)", () => {
     const db = openMemoryDatabase();
@@ -24,7 +30,7 @@ describe("SqliteGeneralReportStore", () => {
     const store = new SqliteGeneralReportStore(db, { now: () => new Date("2026-01-01T00:00:01.000Z") });
 
     const row = jobs.create(newJob());
-    store.recordFinished(finished(row));
+    store.recordFinished(finished(row), one("login-smoke"));
 
     assert.deepEqual(store.list("detox", "iteration_1"), [{ target: "login-smoke", latestJobId: row.id, latestOutcome: "success", latestFinishedAt: "2026-01-01T00:00:00.000Z" }]);
     assert.deepEqual(store.list("detox", "main"), [], "a different branch sees nothing");
@@ -37,9 +43,9 @@ describe("SqliteGeneralReportStore", () => {
     const store = new SqliteGeneralReportStore(db);
 
     const first = jobs.create(newJob());
-    store.recordFinished(finished(first, { outcome: "failure", finishedAt: "2026-01-01T00:00:00.000Z" }));
+    store.recordFinished(finished(first, { finishedAt: "2026-01-01T00:00:00.000Z" }), one("login-smoke", "failure"));
     const second = jobs.create(newJob());
-    store.recordFinished(finished(second, { outcome: "success", finishedAt: "2026-01-01T00:05:00.000Z" }));
+    store.recordFinished(finished(second, { finishedAt: "2026-01-01T00:05:00.000Z" }), one("login-smoke", "success"));
 
     const entries = store.list("detox", "iteration_1");
     assert.equal(entries.length, 1, "still one row per (project, branch, target), not a history of both");
@@ -52,9 +58,9 @@ describe("SqliteGeneralReportStore", () => {
     const store = new SqliteGeneralReportStore(db);
 
     const newer = jobs.create(newJob());
-    store.recordFinished(finished(newer, { outcome: "success", finishedAt: "2026-01-01T00:05:00.000Z" }));
+    store.recordFinished(finished(newer, { finishedAt: "2026-01-01T00:05:00.000Z" }), one("login-smoke", "success"));
     const older = jobs.create(newJob());
-    store.recordFinished(finished(older, { outcome: "failure", finishedAt: "2026-01-01T00:00:00.000Z" }));
+    store.recordFinished(finished(older, { finishedAt: "2026-01-01T00:00:00.000Z" }), one("login-smoke", "failure"));
 
     assert.deepEqual(store.list("detox", "iteration_1"), [{ target: "login-smoke", latestJobId: newer.id, latestOutcome: "success", latestFinishedAt: "2026-01-01T00:05:00.000Z" }]);
   });
@@ -66,21 +72,57 @@ describe("SqliteGeneralReportStore", () => {
 
     const login = jobs.create(newJob({ target: "login-smoke" }));
     const checkout = jobs.create(newJob({ target: "checkout-smoke" }));
-    store.recordFinished(finished(login));
-    store.recordFinished(finished(checkout, { outcome: "failure" }));
+    store.recordFinished(finished(login), one("login-smoke"));
+    store.recordFinished(finished(checkout), one("checkout-smoke", "failure"));
 
     const entries = store.list("detox", "iteration_1");
     assert.equal(entries.length, 2);
     assert.deepEqual(new Set(entries.map((e) => e.target)), new Set(["login-smoke", "checkout-smoke"]));
   });
 
-  it("ignores a job with no outcome/finishedAt yet (never calls recordFinished for a non-terminal job in practice, but stays harmless if it did)", () => {
+  it("records every scenario from a single \"pipeline\" job's report under the same latestJobId", () => {
+    const db = openMemoryDatabase();
+    const jobs = new SqliteJobStore(db);
+    const store = new SqliteGeneralReportStore(db);
+
+    const pipeline = jobs.create(newJob({ kind: "pipeline", target: "all" }));
+    store.recordFinished(finished(pipeline), [
+      { target: "login-smoke", outcome: "success" },
+      { target: "checkout-smoke", outcome: "failure" },
+      { target: "refund-smoke", outcome: "warning" },
+    ]);
+
+    const entries = store.list("detox", "iteration_1");
+    assert.equal(entries.length, 3);
+    assert.deepEqual(
+      new Map(entries.map((e) => [e.target, e.latestOutcome])),
+      new Map([
+        ["login-smoke", "success"],
+        ["checkout-smoke", "failure"],
+        ["refund-smoke", "warning"],
+      ]),
+    );
+    assert.ok(entries.every((e) => e.latestJobId === pipeline.id));
+  });
+
+  it("ignores a job with no finishedAt yet (never calls recordFinished for a non-terminal job in practice, but stays harmless if it did)", () => {
     const db = openMemoryDatabase();
     const jobs = new SqliteJobStore(db);
     const store = new SqliteGeneralReportStore(db);
 
     const row = jobs.create(newJob());
-    store.recordFinished({ ...row, outcome: null, finishedAt: null });
+    store.recordFinished({ ...row, outcome: null, finishedAt: null }, one("login-smoke"));
+
+    assert.deepEqual(store.list("detox", "iteration_1"), []);
+  });
+
+  it("does nothing for an empty scenario list (a report with no recognizable scenarios)", () => {
+    const db = openMemoryDatabase();
+    const jobs = new SqliteJobStore(db);
+    const store = new SqliteGeneralReportStore(db);
+
+    const row = jobs.create(newJob());
+    store.recordFinished(finished(row), []);
 
     assert.deepEqual(store.list("detox", "iteration_1"), []);
   });

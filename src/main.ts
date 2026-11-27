@@ -8,6 +8,7 @@ import { FileReportArchive } from "./adapters/detox/report-archive";
 import { CliApkStatusChecker } from "./adapters/detox/apk-status-checker";
 import { CliDeviceChecker } from "./adapters/detox/device-checker";
 import { CliScenarioLister } from "./adapters/detox/scenario-lister";
+import { readRunSummary } from "./adapters/detox/run-report";
 import { createApp } from "./app";
 import { ArtifactTickets } from "./auth/artifact-ticket";
 import { loadConfig } from "./config/load-config";
@@ -85,11 +86,17 @@ async function main(): Promise<void> {
   // report, and ArtifactAccessGuard later verifies the same ticket against the same instance.
   const artifactTickets = new ArtifactTickets(undefined, ARTIFACT_TICKET_SWEEP_INTERVAL_MS);
   const notify = notifyOnFinish(artifactTickets, publicBaseUrl(config.server.host, config.server.port), logger);
-  // Composed here, not inside notifyOnFinish (which must stay unaware of the general report): only a
-  // finished "run" on the tracked branch counts towards the aggregate — a build/pipeline job, or one
-  // on any other branch, still gets its webhook exactly as before, just never touches this store.
+  // Composed here, not inside notifyOnFinish (which must stay unaware of the general report): a job
+  // on any other branch, or with no report (e.g. a "build"), still gets its webhook exactly as before,
+  // just never touches this store. Deliberately not filtered by `job.kind`: a "run" job's report always
+  // names exactly one scenario, but a "pipeline" job's single report can cover many at once (STA — the
+  // Status page was staying empty because only "run" counted, even though "pipeline" is how most actual
+  // suites get triggered) — `readRunSummary` already gives the per-scenario breakdown either way.
   const onFinished = (job: Job): Promise<void> => {
-    if (job.kind === "run" && job.ref === config.reportBranch) generalReportStore.recordFinished(job);
+    if (job.ref === config.reportBranch && job.reportPath) {
+      const summary = readRunSummary(job.reportPath);
+      if (summary) generalReportStore.recordFinished(job, summary.scenarios.map((s) => ({ target: s.id, outcome: s.outcome })));
+    }
     return notify(job);
   };
   // Nothing else wakes the scheduler for a job that canStart is blocking only on device connectivity
