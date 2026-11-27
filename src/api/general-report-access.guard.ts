@@ -1,7 +1,7 @@
 import { CanActivate, ExecutionContext, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import type { Request } from "express";
-import { ARTIFACT_TICKETS, GENERAL_REPORT_TICKET_SUBJECT, type ArtifactTickets } from "../auth/artifact-ticket";
+import { ARTIFACT_TICKETS, GENERAL_REPORT_TICKET_SUBJECT, type TicketStore } from "../auth/artifact-ticket";
 import { bearerTokenOf, enforceRole } from "../auth/access-control";
 import { API_KEY_VERIFIER, type CredentialVerifier } from "../auth/api-key-verifier";
 import { WEB_SESSIONS, type WebSessions } from "../auth/web-sessions";
@@ -17,7 +17,7 @@ export class GeneralReportAccessGuard implements CanActivate {
   constructor(
     @Inject(API_KEY_VERIFIER) private readonly apiKeys: CredentialVerifier,
     @Inject(WEB_SESSIONS) private readonly sessions: WebSessions,
-    @Inject(ARTIFACT_TICKETS) private readonly tickets: ArtifactTickets,
+    @Inject(ARTIFACT_TICKETS) private readonly tickets: TicketStore,
     @Inject(Reflector) private readonly reflector: Reflector,
   ) {}
 

@@ -2,7 +2,7 @@ import { Controller, Get, Inject, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import { GeneralReportAccessGuard } from "./general-report-access.guard";
 import { Public, Roles } from "../auth/access-control";
-import { ARTIFACT_TICKETS, type ArtifactTickets } from "../auth/artifact-ticket";
+import { ARTIFACT_TICKETS, type TicketStore } from "../auth/artifact-ticket";
 import { GENERAL_REPORT_STORE, REPORT_BRANCH, type GeneralReportEntry, type GeneralReportStore } from "../core/general-report-store";
 import { JOB_SERVICE, type JobService } from "../core/job-service";
 import type { Outcome } from "../core/job";
@@ -72,7 +72,7 @@ export class GeneralReportController {
     @Inject(GENERAL_REPORT_STORE) private readonly store: GeneralReportStore,
     @Inject(REPORT_BRANCH) private readonly reportBranch: string,
     @Inject(JOB_SERVICE) private readonly jobs: JobService,
-    @Inject(ARTIFACT_TICKETS) private readonly tickets: ArtifactTickets,
+    @Inject(ARTIFACT_TICKETS) private readonly tickets: TicketStore,
   ) {}
 
   @Get("general")
@@ -82,9 +82,10 @@ export class GeneralReportController {
 
   /**
    * The public, no-login page a webhook's `links.report` points at by default. Every row's "Ver
-   * reporte" link carries that job's own ticket too (`ArtifactTickets.issue`, already idempotent —
-   * this never mints a second ticket for a job that already has one from its own `onFinished` run),
-   * so this page stays fully openable without a session end to end, not just at the top level.
+   * reporte" link carries that job's own ticket too (a fresh `tickets.issue(jobId)` call — fine even
+   * if it differs from the one that job's own `onFinished` run minted, since every valid ticket for a
+   * job resolves the same way), so this page stays fully openable without a session end to end, not
+   * just at the top level.
    */
   @Public()
   @UseGuards(GeneralReportAccessGuard)

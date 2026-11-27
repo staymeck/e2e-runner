@@ -10,7 +10,7 @@ import { HealthController } from "./api/health.controller";
 import { JobsController } from "./api/jobs.controller";
 import { ProjectsController } from "./api/projects.controller";
 import { API_KEY_VERIFIER, ApiKeyVerifier } from "./auth/api-key-verifier";
-import { ARTIFACT_TICKETS, ArtifactTickets } from "./auth/artifact-ticket";
+import { ARTIFACT_TICKETS, ArtifactTickets, type TicketStore } from "./auth/artifact-ticket";
 import { STREAM_TICKETS, StreamTickets } from "./auth/stream-ticket";
 import { WEB_SESSIONS, WebSessions } from "./auth/web-sessions";
 import { WEB_USER_DIRECTORY, WebUserDirectory } from "./auth/web-users";
@@ -36,7 +36,7 @@ export interface AppDependencies {
    * `ArtifactAccessGuard` that later verifies one. Defaults to a fresh instance for a caller (e.g. a
    * test) that does not care about that wiring.
    */
-  readonly artifactTickets?: ArtifactTickets;
+  readonly artifactTickets?: TicketStore;
   /**
    * Parsed once here (or supplied by a test that wants a fixed allowlist without touching
    * `process.env.E2E_WEBHOOK_SUBSCRIBERS`); `POST /v1/jobs` checks a submitted `webhookUrl` against

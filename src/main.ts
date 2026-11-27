@@ -10,7 +10,8 @@ import { CliDeviceChecker } from "./adapters/detox/device-checker";
 import { CliScenarioLister } from "./adapters/detox/scenario-lister";
 import { readRunSummary } from "./adapters/detox/run-report";
 import { createApp } from "./app";
-import { ArtifactTickets } from "./auth/artifact-ticket";
+import { SignedArtifactTickets } from "./auth/signed-artifact-tickets";
+import { loadOrCreateTicketSecret } from "./auth/ticket-secret";
 import { loadConfig } from "./config/load-config";
 import { AdapterRegistry } from "./core/adapter";
 import type { Job } from "./core/job";
@@ -33,8 +34,6 @@ const REPORT_ARCHIVE_SUBDIR = "reports";
 
 const SHUTDOWN_DRAIN_MS = 10_000;
 const DEVICE_RECHECK_INTERVAL_MS = 15_000;
-/** Once a day is plenty against ArtifactTickets' 30-day TTL — this only trims entries the lazy, issue-triggered sweep hasn't gotten to yet. */
-const ARTIFACT_TICKET_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Where a webhook's own links.*, built from this, must point — never `config.server.host`/`port`
@@ -82,9 +81,12 @@ async function main(): Promise<void> {
       ),
     );
   }
-  // Shared with the API layer below: the scheduler issues a ticket the moment a finished job has a
-  // report, and ArtifactAccessGuard later verifies the same ticket against the same instance.
-  const artifactTickets = new ArtifactTickets(undefined, ARTIFACT_TICKET_SWEEP_INTERVAL_MS);
+  // Signed, not stored (STA — a restart used to drop every outstanding report link, which broke the
+  // general report's long-lived shared link on every redeploy): verifying a ticket is pure HMAC
+  // verification against `ticketSecret`, so this instance and the API layer below never need to be
+  // "the same one" the way an in-memory store would.
+  const ticketSecret = loadOrCreateTicketSecret(config.dataDir);
+  const artifactTickets = new SignedArtifactTickets(ticketSecret);
   const notify = notifyOnFinish(artifactTickets, publicBaseUrl(config.server.host, config.server.port), logger);
   // Composed here, not inside notifyOnFinish (which must stay unaware of the general report): a job
   // on any other branch, or with no report (e.g. a "build"), still gets its webhook exactly as before,

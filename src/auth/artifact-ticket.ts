@@ -18,6 +18,12 @@ interface IssuedTicket {
   readonly expiresAt: number;
 }
 
+/** What every guard/controller here actually depends on — `issue`/`resolve`, not how a given implementation gets there. */
+export interface TicketStore {
+  issue(subject: string): string;
+  resolve(ticket: string): string | undefined;
+}
+
 /**
  * Long-lived, reusable tickets scoped to one job's artifact routes (today: `GET .../report`) — for a
  * link a webhook/email/Slack message hands to someone with no session of their own, so, unlike
@@ -33,8 +39,13 @@ interface IssuedTicket {
  * `JobScheduler`'s `recheckIntervalMs`: a 30-day TTL means the lazy, issue-triggered sweep alone
  * could leave a month of expired entries sitting in memory between finished jobs, so production
  * wiring (`main.ts`) turns the periodic sweep on explicitly; nothing about the class itself requires it.
+ *
+ * Production no longer uses this class directly (see `SignedArtifactTickets` — a restart here loses
+ * every outstanding link, which is exactly what broke the general report's long-lived shared link);
+ * kept as the simple in-memory `TicketStore` these tests, and anything else that does not care about
+ * surviving a restart, are built against.
  */
-export class ArtifactTickets {
+export class ArtifactTickets implements TicketStore {
   private readonly tickets = new Map<string, IssuedTicket>();
   private readonly byJob = new Map<string, string>();
   private readonly sweepTimer: NodeJS.Timeout | undefined;

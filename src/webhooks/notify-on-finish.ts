@@ -20,10 +20,10 @@ export interface TicketIssuer {
  *
  * `job.reportPath ? artifactTickets.issue(job.id) : undefined` runs for every finished job
  * regardless of `webhookUrl` (not just inside the `if` below): this is also what pre-warms the
- * ticket STA-54's web "Ver reporte" flow relies on, so a webhook-less job still gets one. Same
- * reasoning for `artifactTickets.issue(GENERAL_REPORT_TICKET_SUBJECT)`: it is idempotent per subject
- * (always the same ticket while valid), so calling it on every finish just keeps that one shared
- * ticket alive rather than minting a new one.
+ * ticket STA-54's web "Ver reporte" flow relies on, so a webhook-less job still gets one. Same for
+ * `artifactTickets.issue(GENERAL_REPORT_TICKET_SUBJECT)`: calling it on every finish is what keeps
+ * the shared general-report link resolvable — whether that mints the same ticket every time or a
+ * fresh one each call is purely a detail of whichever `TicketIssuer` is wired in (`main.ts`).
  *
  * Returns an async function (not `void`-returning) purely so a test can `await` it deterministically
  * instead of guessing a `setTimeout`; `JobScheduler.onFinished` is typed `(job: Job) => void` and never
