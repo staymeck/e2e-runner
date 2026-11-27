@@ -31,7 +31,13 @@ async function withApi(run: (api: Api) => Promise<void>): Promise<void> {
   const ctx = buildService(fakeAdapter("detox", ["devices"]));
   const generalReportStore = new SqliteGeneralReportStore(ctx.db);
   const tickets = new ArtifactTickets();
-  const app = await createApp(config, { jobs: ctx.service, artifactTickets: tickets, generalReportStore, reportBranch: "iteration_1" });
+  const app = await createApp(config, {
+    jobs: ctx.service,
+    artifactTickets: tickets,
+    generalReportStore,
+    reportBranch: "iteration_1",
+    publicBaseUrl: "https://e2e.example.com/orchestrator",
+  });
   await app.listen(0, "127.0.0.1");
   const base = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}`;
   const call: Api["call"] = (method, path, headers = {}) => fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${KEY}`, ...headers } });
@@ -76,6 +82,28 @@ describe("GET /v1/report/general", () => {
   it("answers 401 with no credential at all — this endpoint is not public", async () => {
     await withApi(async (api) => {
       const response = await api.call("GET", "/v1/report/general", { authorization: "" });
+      assert.equal(response.status, 401);
+    });
+  });
+});
+
+describe("GET /v1/report/general/link", () => {
+  it("hands back an absolute, openable URL carrying a fresh general-report ticket", async () => {
+    await withApi(async (api) => {
+      const response = await api.call("GET", "/v1/report/general/link");
+      assert.equal(response.status, 200);
+      const body = (await response.json()) as { url: string };
+      assert.match(body.url, /^https:\/\/e2e\.example\.com\/orchestrator\/v1\/report\/general\/html\?ticket=/);
+
+      const ticket = new URL(body.url).searchParams.get("ticket");
+      assert.ok(ticket);
+      assert.equal(api.tickets.resolve(ticket!), GENERAL_REPORT_TICKET_SUBJECT);
+    });
+  });
+
+  it("answers 401 with no credential at all — this endpoint is not public", async () => {
+    await withApi(async (api) => {
+      const response = await api.call("GET", "/v1/report/general/link", { authorization: "" });
       assert.equal(response.status, 401);
     });
   });

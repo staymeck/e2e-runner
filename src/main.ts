@@ -13,6 +13,7 @@ import { createApp } from "./app";
 import { SignedArtifactTickets } from "./auth/signed-artifact-tickets";
 import { loadOrCreateTicketSecret } from "./auth/ticket-secret";
 import { loadConfig } from "./config/load-config";
+import { publicBaseUrl } from "./config/public-base-url";
 import { AdapterRegistry } from "./core/adapter";
 import type { Job } from "./core/job";
 import { JobEnqueuer } from "./core/job-enqueuer";
@@ -34,17 +35,6 @@ const REPORT_ARCHIVE_SUBDIR = "reports";
 
 const SHUTDOWN_DRAIN_MS = 10_000;
 const DEVICE_RECHECK_INTERVAL_MS = 15_000;
-
-/**
- * Where a webhook's own links.*, built from this, must point — never `config.server.host`/`port`
- * directly: those are what this process binds to, which a reverse proxy (or Docker) usually makes
- * unreachable from outside. Unset (the common case behind a path-prefixing proxy, same as
- * E2E_RUNNER_WEB_BASE for the web/STA-51), falls back to the bind address — correct only for a setup
- * with nothing in front of this service.
- */
-function publicBaseUrl(host: string, port: number): string {
-  return process.env.E2E_SERVICE_PUBLIC_URL?.trim() || `http://${host}:${port}`;
-}
 
 async function main(): Promise<void> {
   const logger = createLogger();
@@ -87,7 +77,8 @@ async function main(): Promise<void> {
   // "the same one" the way an in-memory store would.
   const ticketSecret = loadOrCreateTicketSecret(config.dataDir);
   const artifactTickets = new SignedArtifactTickets(ticketSecret);
-  const notify = notifyOnFinish(artifactTickets, publicBaseUrl(config.server.host, config.server.port), logger);
+  const baseUrl = publicBaseUrl(config.server.host, config.server.port);
+  const notify = notifyOnFinish(artifactTickets, baseUrl, logger);
   // Composed here, not inside notifyOnFinish (which must stay unaware of the general report): a job
   // on any other branch, or with no report (e.g. a "build"), still gets its webhook exactly as before,
   // just never touches this store. Deliberately not filtered by `job.kind`: a "run" job's report always
@@ -114,7 +105,7 @@ async function main(): Promise<void> {
   const onShutdown = [() => scheduler.shutdown(SHUTDOWN_DRAIN_MS), () => db.close()];
   const app = await createApp(
     config,
-    { jobs, logs: jobLog, diagnostics: logger, onShutdown, artifactTickets, generalReportStore, reportBranch: config.reportBranch },
+    { jobs, logs: jobLog, diagnostics: logger, onShutdown, artifactTickets, generalReportStore, reportBranch: config.reportBranch, publicBaseUrl: baseUrl },
     new PinoNestLogger(logger),
   );
   await app.listen(config.server.port, config.server.host);

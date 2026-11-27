@@ -2,7 +2,8 @@ import { Controller, Get, Inject, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import { GeneralReportAccessGuard } from "./general-report-access.guard";
 import { Public, Roles } from "../auth/access-control";
-import { ARTIFACT_TICKETS, type TicketStore } from "../auth/artifact-ticket";
+import { ARTIFACT_TICKETS, GENERAL_REPORT_TICKET_SUBJECT, type TicketStore } from "../auth/artifact-ticket";
+import { PUBLIC_BASE_URL } from "../config/public-base-url";
 import { GENERAL_REPORT_STORE, REPORT_BRANCH, type GeneralReportEntry, type GeneralReportStore } from "../core/general-report-store";
 import { JOB_SERVICE, type JobService } from "../core/job-service";
 import type { Outcome } from "../core/job";
@@ -73,11 +74,24 @@ export class GeneralReportController {
     @Inject(REPORT_BRANCH) private readonly reportBranch: string,
     @Inject(JOB_SERVICE) private readonly jobs: JobService,
     @Inject(ARTIFACT_TICKETS) private readonly tickets: TicketStore,
+    @Inject(PUBLIC_BASE_URL) private readonly baseUrl: string,
   ) {}
 
   @Get("general")
   general(): GeneralReportView {
     return this.view(this.defaultProject());
+  }
+
+  /**
+   * The link to hand someone with no login — on demand, instead of waiting for a job to finish
+   * (that is the only other place a general-report ticket gets minted, in `notifyOnFinish`). Needs a
+   * real session/API key itself (same guard as `GET general`): this is where an admin goes to get the
+   * shareable link, not something to expose anonymously.
+   */
+  @Get("general/link")
+  link(): { url: string } {
+    const ticket = this.tickets.issue(GENERAL_REPORT_TICKET_SUBJECT);
+    return { url: `${this.baseUrl}/v1/report/general/html?ticket=${encodeURIComponent(ticket)}` };
   }
 
   /**

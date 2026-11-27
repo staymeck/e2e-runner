@@ -14,6 +14,7 @@ import { ARTIFACT_TICKETS, ArtifactTickets, type TicketStore } from "./auth/arti
 import { STREAM_TICKETS, StreamTickets } from "./auth/stream-ticket";
 import { WEB_SESSIONS, WebSessions } from "./auth/web-sessions";
 import { WEB_USER_DIRECTORY, WebUserDirectory } from "./auth/web-users";
+import { PUBLIC_BASE_URL } from "./config/public-base-url";
 import type { ServiceConfig } from "./config/service-config";
 import { DIAGNOSTICS, silentDiagnostics, type Diagnostics } from "./core/diagnostics";
 import { GENERAL_REPORT_STORE, REPORT_BRANCH, type GeneralReportStore } from "./core/general-report-store";
@@ -48,6 +49,12 @@ export interface AppDependencies {
   readonly generalReportStore?: GeneralReportStore;
   /** `config.reportBranch`, forwarded as-is — see `ServiceConfig`'s own doc. Defaults to "master". */
   readonly reportBranch?: string;
+  /**
+   * Same value `notifyOnFinish` builds its own links.* from (`publicBaseUrl()` in `main.ts`) — needed
+   * here too so `GET /v1/report/general/link` can hand back an absolute, openable URL rather than a
+   * bare ticket. Defaults to "" for a caller (e.g. a test) that builds its own URL instead.
+   */
+  readonly publicBaseUrl?: string;
 }
 
 @Module({})
@@ -67,6 +74,7 @@ export class AppModule {
         { provide: WEBHOOK_SUBSCRIBERS, useValue: dependencies.webhookSubscribers ?? parseWebhookSubscribers() },
         { provide: GENERAL_REPORT_STORE, useValue: dependencies.generalReportStore ?? { recordFinished: () => undefined, list: () => [] } },
         { provide: REPORT_BRANCH, useValue: dependencies.reportBranch ?? config.reportBranch },
+        { provide: PUBLIC_BASE_URL, useValue: dependencies.publicBaseUrl ?? "" },
         { provide: DIAGNOSTICS, useValue: dependencies.diagnostics ?? silentDiagnostics },
         { provide: SHUTDOWN_CALLBACKS, useValue: dependencies.onShutdown ?? [] },
         ShutdownHooks,
