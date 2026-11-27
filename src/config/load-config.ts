@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { DETOX_ADAPTER, loadDetoxConfig, type DetoxConfig } from "../adapters/detox/detox-config";
-import { isBranchAllowed, isValidBranchPattern } from "../core/branch-pattern";
+import { isBranchAllowed, isValidBranchName, isValidBranchPattern } from "../core/branch-pattern";
 import { ConfigError, Problems } from "../core/problems";
 import type { ProjectConfig, ServiceConfig, WebRole, WebUserCredential } from "./service-config";
 
@@ -97,6 +97,23 @@ function readServer(env: NodeJS.ProcessEnv, problems: Problems): ServiceConfig["
     }
   }
   return { host, port };
+}
+
+const DEFAULT_REPORT_BRANCH = "master";
+
+/**
+ * Which branch the general report (`GET /v1/report/general`) tracks — cross-project, not validated
+ * against any one project's `allowedBranches` (those are per-project policy; this is just "which
+ * branch's jobs count towards the aggregate"). Only shape-checked, same as a submit-time `ref`.
+ */
+function readReportBranch(env: NodeJS.ProcessEnv, problems: Problems): string {
+  const raw = env.E2E_SERVICE_REPORT_BRANCH?.trim();
+  if (!raw) return DEFAULT_REPORT_BRANCH;
+  if (!isValidBranchName(raw)) {
+    problems.add(`E2E_SERVICE_REPORT_BRANCH is not a valid branch name: "${raw}"`);
+    return DEFAULT_REPORT_BRANCH;
+  }
+  return raw;
 }
 
 function readAbsolutePath(env: NodeJS.ProcessEnv, name: string, problems: Problems): string {
@@ -207,6 +224,7 @@ export function loadConfig(env: NodeJS.ProcessEnv, readFile: ReadTextFile = read
   const webUsers = readWebUsers(env, problems);
   const server = readServer(env, problems);
   const dataDir = readAbsolutePath(env, "E2E_SERVICE_DATA_DIR", problems);
+  const reportBranch = readReportBranch(env, problems);
   const projects = readProjects(env, readFile, problems);
 
   let detox: DetoxConfig | undefined;
@@ -219,5 +237,5 @@ export function loadConfig(env: NodeJS.ProcessEnv, readFile: ReadTextFile = read
   }
 
   if (problems.any) throw new ConfigError(problems.list);
-  return { server, apiKeys, webUsers, dataDir, projects, detox };
+  return { server, apiKeys, webUsers, dataDir, reportBranch, projects, detox };
 }

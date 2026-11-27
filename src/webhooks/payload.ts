@@ -1,4 +1,4 @@
-import type { Job, JobPhase, Outcome } from "../core/job";
+import type { Job, JobPhase, Outcome, ReportScope } from "../core/job";
 import { createWebhookEventId } from "./sign";
 
 /**
@@ -17,6 +17,11 @@ import { createWebhookEventId } from "./sign";
  *   `ArtifactTickets` entry, reusable across multiple opens over its own TTL rather than a stored,
  *   manually-rotated per-job secret — see that class's own doc for why. Present only when the caller
  *   passes one; omitted (not a bare, unusable link) otherwise.
+ * - `links.report` points at the *general* report's public page by default (`job.reportScope`,
+ *   `"general"` unless the submitter asked for `"job"`) — the shared, always-current link for the
+ *   whole tracked branch, not this one job's own report. `reportTicket` (this job's own) is still
+ *   issued and still available via `GET .../jobs/:id/report` regardless of scope; only which one
+ *   `links.report` surfaces changes.
  */
 export type WebhookEvent = "started" | "finished";
 export type WebhookJobType = "scenario" | "build" | "pipeline";
@@ -66,11 +71,23 @@ export function toWebhookJobType(kind: Job["kind"]): WebhookJobType {
   return "pipeline";
 }
 
-/** `reportTicket`: an `ArtifactTickets` entry for this job, if the caller has one (see `WebhookJobLinks`). */
-export function buildJobLinks(baseUrl: string, jobId: string, reportTicket?: string): WebhookJobLinks {
+/**
+ * `reportScope` picks which of the two tickets `links.report` is built from: `"general"` (default)
+ * uses `generalReportTicket` and points at the shared public page; `"job"` uses `reportTicket` and
+ * points at this job's own report, exactly as before this field existed. Either ticket being absent
+ * (not yet issued, or the job has no report at all) falls back to omitting `links.report` entirely,
+ * not a bare, unusable link.
+ */
+export function buildJobLinks(baseUrl: string, jobId: string, reportScope: ReportScope, reportTicket?: string, generalReportTicket?: string): WebhookJobLinks {
   const base = baseUrl.replace(/\/+$/, "");
   const links = { job: `${base}/v1/jobs/${jobId}`, log: `${base}/v1/jobs/${jobId}/log` };
-  return reportTicket ? { ...links, report: `${base}/v1/jobs/${jobId}/report?ticket=${encodeURIComponent(reportTicket)}` } : links;
+  if (reportScope === "general" && generalReportTicket) {
+    return { ...links, report: `${base}/v1/report/general/html?ticket=${encodeURIComponent(generalReportTicket)}` };
+  }
+  if (reportScope === "job" && reportTicket) {
+    return { ...links, report: `${base}/v1/jobs/${jobId}/report?ticket=${encodeURIComponent(reportTicket)}` };
+  }
+  return links;
 }
 
 function toPhaseResult(phase: JobPhase): WebhookPhaseResult {
@@ -94,6 +111,8 @@ export interface BuildWebhookPayloadOptions {
   readonly baseUrl: string;
   /** Forwarded to `buildJobLinks`: an `ArtifactTickets` entry for this job, if the caller has one. */
   readonly reportTicket?: string;
+  /** Forwarded to `buildJobLinks`: an `ArtifactTickets` entry for `GENERAL_REPORT_TICKET_SUBJECT`. */
+  readonly generalReportTicket?: string;
   readonly eventId?: string;
   readonly timestamp?: number;
 }
@@ -121,6 +140,6 @@ export function buildWebhookPayload(opts: BuildWebhookPayloadOptions): WebhookPa
     durationMs: durationOf(job.startedAt, job.finishedAt),
     error: job.error,
     phases: job.phases.map(toPhaseResult),
-    links: buildJobLinks(opts.baseUrl, job.id, opts.reportTicket),
+    links: buildJobLinks(opts.baseUrl, job.id, job.reportScope, opts.reportTicket, opts.generalReportTicket),
   };
 }

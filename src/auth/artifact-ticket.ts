@@ -2,12 +2,26 @@ import { randomBytes } from "node:crypto";
 
 export const ARTIFACT_TICKETS = Symbol("ARTIFACT_TICKETS");
 
+/**
+ * Not a real job id: the fixed "subject" `issue`/`resolve` use for the general report's own public
+ * page (`GET /v1/report/general/html`) — there is no single job to scope that ticket to, so it's
+ * issued once for this well-known key instead, same mechanics (idempotent, swept, TTL'd) as any
+ * per-job ticket.
+ */
+export const GENERAL_REPORT_TICKET_SUBJECT = "general-report";
+
 const TICKET_BYTES = 32;
 export const DEFAULT_ARTIFACT_TICKET_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 interface IssuedTicket {
   readonly jobId: string;
   readonly expiresAt: number;
+}
+
+/** What every guard/controller here actually depends on — `issue`/`resolve`, not how a given implementation gets there. */
+export interface TicketStore {
+  issue(subject: string): string;
+  resolve(ticket: string): string | undefined;
 }
 
 /**
@@ -25,8 +39,13 @@ interface IssuedTicket {
  * `JobScheduler`'s `recheckIntervalMs`: a 30-day TTL means the lazy, issue-triggered sweep alone
  * could leave a month of expired entries sitting in memory between finished jobs, so production
  * wiring (`main.ts`) turns the periodic sweep on explicitly; nothing about the class itself requires it.
+ *
+ * Production no longer uses this class directly (see `SignedArtifactTickets` — a restart here loses
+ * every outstanding link, which is exactly what broke the general report's long-lived shared link);
+ * kept as the simple in-memory `TicketStore` these tests, and anything else that does not care about
+ * surviving a restart, are built against.
  */
-export class ArtifactTickets {
+export class ArtifactTickets implements TicketStore {
   private readonly tickets = new Map<string, IssuedTicket>();
   private readonly byJob = new Map<string, string>();
   private readonly sweepTimer: NodeJS.Timeout | undefined;

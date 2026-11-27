@@ -46,6 +46,16 @@ describe("loadConfig", () => {
     assert.equal(config.detox?.runnerDir, fs.realpathSync.native(runnerDir));
   });
 
+  it("defaults E2E_SERVICE_REPORT_BRANCH to master, and accepts a custom one", () => {
+    assert.equal(loadConfig(envWith(), readProjects(validProjects)).reportBranch, "master");
+    assert.equal(loadConfig(envWith({ E2E_SERVICE_REPORT_BRANCH: "iteration_1" }), readProjects(validProjects)).reportBranch, "iteration_1");
+  });
+
+  it("rejects an E2E_SERVICE_REPORT_BRANCH that is not a valid branch name, falling back to master", () => {
+    const problems = problemsOf(envWith({ E2E_SERVICE_REPORT_BRANCH: "has a space" }));
+    assert.ok(problems.some((p) => p.includes("E2E_SERVICE_REPORT_BRANCH")));
+  });
+
   it("accepts a second key for rotation and a custom host and port", () => {
     const config = loadConfig(
       envWith({ E2E_SERVICE_API_KEY_NEXT: "the-next-key-0123456789", E2E_SERVICE_HOST: "0.0.0.0", E2E_SERVICE_PORT: "9100" }),

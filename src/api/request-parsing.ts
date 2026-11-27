@@ -1,11 +1,20 @@
-import { JOB_STATUSES, type JobFilter, type JobPage, type JobStatus } from "../core/job";
+import { JOB_STATUSES, type JobFilter, type JobPage, type JobStatus, type ReportScope } from "../core/job";
 import { InvalidJobRequestError } from "../core/job-request";
 import type { SubmitJob } from "../core/job-service";
 import { assertWebhookUrlAllowed } from "../webhooks/url-guard";
 import type { WebhookSubscriberSecrets } from "../webhooks/subscribers";
 
 const MAX_TEXT = 255;
-const KNOWN_BODY_KEYS: readonly string[] = ["project", "ref", "kind", "target", "params", "webhookUrl"];
+const KNOWN_BODY_KEYS: readonly string[] = ["project", "ref", "kind", "target", "params", "webhookUrl", "reportScope"];
+const REPORT_SCOPES: readonly ReportScope[] = ["job", "general"];
+
+function reportScope(value: unknown): ReportScope | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || !REPORT_SCOPES.includes(value as ReportScope)) {
+    throw new InvalidJobRequestError(`reportScope must be one of: ${REPORT_SCOPES.join(", ")}`);
+  }
+  return value as ReportScope;
+}
 
 function text(value: unknown, field: string, required: boolean): string | undefined {
   if (value === undefined || value === null) {
@@ -34,6 +43,7 @@ export function parseSubmit(body: unknown, webhookSubscribers: ReadonlyMap<strin
   const kind = text(fields.kind, "kind", false);
   const webhookUrl = text(fields.webhookUrl, "webhookUrl", false);
   if (webhookUrl !== undefined) assertWebhookUrlAllowed(webhookUrl, webhookSubscribers);
+  const scope = reportScope(fields.reportScope);
   return {
     project: text(fields.project, "project", true) as string,
     target: text(fields.target, "target", true) as string,
@@ -41,6 +51,7 @@ export function parseSubmit(body: unknown, webhookSubscribers: ReadonlyMap<strin
     ...(kind === undefined ? {} : { kind }),
     ...(fields.params === undefined ? {} : { params: fields.params }),
     ...(webhookUrl === undefined ? {} : { webhookUrl }),
+    ...(scope === undefined ? {} : { reportScope: scope }),
   };
 }
 

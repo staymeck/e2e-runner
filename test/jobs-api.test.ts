@@ -26,6 +26,7 @@ const config: ServiceConfig = {
     { username: "cypress-user", password: CYPRESS_PASSWORD, role: "e2e-cypress" },
   ],
   dataDir: "/unused",
+  reportBranch: "master",
   projects: [],
   detox: undefined,
 };
@@ -506,6 +507,32 @@ describe("POST /v1/jobs — webhookUrl (STA-35)", () => {
       undefined,
       subscribers,
     );
+  });
+});
+
+describe("POST /v1/jobs — reportScope", () => {
+  it("defaults to \"general\" when omitted", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody & { id: string }>(api.submit({ project: "detox", ref: "main", target: "t" }));
+      assert.equal(api.ctx.store.get(job.id)?.reportScope, "general");
+      await api.adapter.executor.finish(job.id, OK);
+    }, fakeAdapter("detox", ["devices"]));
+  });
+
+  it("accepts and stores an explicit \"job\" or \"general\"", async () => {
+    await withApi(async (api) => {
+      const job = await api.json<JobBody & { id: string }>(api.submit({ project: "detox", ref: "main", target: "t", reportScope: "job" }));
+      assert.equal(api.ctx.store.get(job.id)?.reportScope, "job");
+      await api.adapter.executor.finish(job.id, OK);
+    }, fakeAdapter("detox", ["devices"]));
+  });
+
+  it("answers 400 for a reportScope outside \"job\"/\"general\", creating nothing", async () => {
+    await withApi(async (api) => {
+      const response = await api.submit({ project: "detox", ref: "main", target: "t", reportScope: "everything" });
+      assert.equal(response.status, 400);
+      noJobsOrPins(api);
+    }, fakeAdapter("detox", ["devices"]));
   });
 });
 

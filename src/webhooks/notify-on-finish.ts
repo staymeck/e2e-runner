@@ -1,3 +1,4 @@
+import { GENERAL_REPORT_TICKET_SUBJECT } from "../auth/artifact-ticket";
 import type { Diagnostics } from "../core/diagnostics";
 import type { Job } from "../core/job";
 import { postJobWebhookEvent } from "./dispatch";
@@ -19,7 +20,10 @@ export interface TicketIssuer {
  *
  * `job.reportPath ? artifactTickets.issue(job.id) : undefined` runs for every finished job
  * regardless of `webhookUrl` (not just inside the `if` below): this is also what pre-warms the
- * ticket STA-54's web "Ver reporte" flow relies on, so a webhook-less job still gets one.
+ * ticket STA-54's web "Ver reporte" flow relies on, so a webhook-less job still gets one. Same for
+ * `artifactTickets.issue(GENERAL_REPORT_TICKET_SUBJECT)`: calling it on every finish is what keeps
+ * the shared general-report link resolvable — whether that mints the same ticket every time or a
+ * fresh one each call is purely a detail of whichever `TicketIssuer` is wired in (`main.ts`).
  *
  * Returns an async function (not `void`-returning) purely so a test can `await` it deterministically
  * instead of guessing a `setTimeout`; `JobScheduler.onFinished` is typed `(job: Job) => void` and never
@@ -34,8 +38,9 @@ export function notifyOnFinish(artifactTickets: TicketIssuer, baseUrl: string, d
   return async (job) => {
     try {
       const reportTicket = job.reportPath ? artifactTickets.issue(job.id) : undefined;
+      const generalReportTicket = artifactTickets.issue(GENERAL_REPORT_TICKET_SUBJECT);
       if (!job.webhookUrl) return;
-      await postJobWebhookEvent(job.webhookUrl, { event: "finished", job, phase: null, phaseIndex: null, baseUrl, reportTicket }, diagnostics);
+      await postJobWebhookEvent(job.webhookUrl, { event: "finished", job, phase: null, phaseIndex: null, baseUrl, reportTicket, generalReportTicket }, diagnostics);
     } catch (error) {
       diagnostics.error({ job: job.id, error: describeError(error) }, "onFinished notification failed unexpectedly");
     }

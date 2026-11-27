@@ -41,6 +41,7 @@ function job(overrides: Partial<Job> = {}): Job {
     logPath: null,
     reportPath: null,
     webhookUrl: null,
+    reportScope: "general",
     phases: [phase],
     ...overrides,
   };
@@ -57,18 +58,18 @@ class FakeTickets implements TicketIssuer {
 const silent = { info: () => undefined, warn: () => undefined, error: () => undefined };
 
 describe("notifyOnFinish", () => {
-  it("issues a report ticket whenever the job has a report, regardless of webhookUrl", async () => {
+  it("issues a report ticket whenever the job has a report, regardless of webhookUrl, plus the shared general-report ticket", async () => {
     const tickets = new FakeTickets();
     const hook = notifyOnFinish(tickets, "https://e2e.example.com", silent);
     await hook(job({ reportPath: "/reports/scenario-run-x", webhookUrl: null }));
-    assert.deepEqual(tickets.issuedFor, ["job-1"]);
+    assert.deepEqual(tickets.issuedFor, ["job-1", "general-report"]);
   });
 
-  it("issues nothing for a job with no report", async () => {
+  it("issues nothing for the job itself when it has no report, but still keeps the shared general-report ticket alive", async () => {
     const tickets = new FakeTickets();
     const hook = notifyOnFinish(tickets, "https://e2e.example.com", silent);
     await hook(job({ reportPath: null, webhookUrl: null }));
-    assert.deepEqual(tickets.issuedFor, []);
+    assert.deepEqual(tickets.issuedFor, ["general-report"]);
   });
 
   it("never attempts a dispatch when webhookUrl is null — nothing warned, even with a report", async () => {
@@ -88,7 +89,7 @@ describe("notifyOnFinish", () => {
 
       await hook(job({ reportPath: "/reports/x", webhookUrl: UNRESOLVABLE_URL }));
 
-      assert.deepEqual(tickets.issuedFor, ["job-1"], "the ticket is issued before the dispatch is attempted");
+      assert.deepEqual(tickets.issuedFor, ["job-1", "general-report"], "the tickets are issued before the dispatch is attempted");
       assert.equal(warnings.length, 1);
       const [fields, message] = warnings[0]!;
       assert.match(message, /could not deliver a webhook/);

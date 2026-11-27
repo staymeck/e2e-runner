@@ -68,21 +68,55 @@ describe("readRunSummary", () => {
   it("reads the counts", () => {
     const dir = catalog();
     const run = runFolder(dir, "a", { total: 3, passed: 2, failed: 1, skipped: 0, scenarios: [] });
-    assert.deepEqual(readRunSummary(run), { total: 3, passed: 2, failed: 1, skipped: 0 });
+    assert.deepEqual(readRunSummary(run), { total: 3, passed: 2, failed: 1, skipped: 0, scenarios: [] });
   });
 
   it("treats missing or odd counts as zero, and a missing or broken file as no summary", () => {
     const dir = catalog();
-    assert.deepEqual(readRunSummary(runFolder(dir, "b", { total: "many" })), { total: 0, passed: 0, failed: 0, skipped: 0 });
+    assert.deepEqual(readRunSummary(runFolder(dir, "b", { total: "many" })), { total: 0, passed: 0, failed: 0, skipped: 0, scenarios: [] });
     assert.equal(readRunSummary(runFolder(dir, "c")), undefined);
     const broken = runFolder(dir, "d");
     fs.writeFileSync(path.join(broken, "summary.json"), "{nope");
     assert.equal(readRunSummary(broken), undefined);
   });
+
+  it("reads the per-scenario breakdown — a \"pipeline\" job's one report can cover many scenarios", () => {
+    const dir = catalog();
+    const run = runFolder(dir, "e", {
+      total: 3,
+      passed: 1,
+      failed: 1,
+      skipped: 1,
+      scenarios: [
+        { id: "login-smoke", status: "passed" },
+        { id: "checkout-smoke", status: "failed" },
+        { id: "refund-smoke", status: "skipped" },
+      ],
+    });
+    assert.deepEqual(readRunSummary(run)?.scenarios, [
+      { id: "login-smoke", outcome: "success" },
+      { id: "checkout-smoke", outcome: "failure" },
+      { id: "refund-smoke", outcome: "warning" },
+    ]);
+  });
+
+  it("drops a scenario entry with no id, an unrecognized status, or a non-object shape, without failing the rest", () => {
+    const dir = catalog();
+    const run = runFolder(dir, "f", {
+      scenarios: [{ id: "ok-one", status: "passed" }, { status: "passed" }, { id: "bad-status", status: "pending" }, "not-an-object", { id: "", status: "passed" }],
+    });
+    assert.deepEqual(readRunSummary(run)?.scenarios, [{ id: "ok-one", outcome: "success" }]);
+  });
+
+  it("treats a missing scenarios array as none", () => {
+    const dir = catalog();
+    const run = runFolder(dir, "g", { total: 1, passed: 1, failed: 0, skipped: 0 });
+    assert.deepEqual(readRunSummary(run)?.scenarios, []);
+  });
 });
 
 describe("deriveOutcome", () => {
-  const summary = (failed: number, skipped: number) => ({ total: 3, passed: 3 - failed - skipped, failed, skipped });
+  const summary = (failed: number, skipped: number) => ({ total: 3, passed: 3 - failed - skipped, failed, skipped, scenarios: [] });
 
   it("is decided by the exit code first", () => {
     assert.equal(deriveOutcome(0, undefined), "success");

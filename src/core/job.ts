@@ -1,6 +1,12 @@
 export type JobStatus = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
 export type PhaseStatus = "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
 export type Outcome = "success" | "warning" | "failure";
+/**
+ * What `links.report` in this job's webhook payload points at (`payload.ts`'s `buildWebhookPayload`):
+ * `"general"` (the default) — the shared, always-current report for the whole tracked branch;
+ * `"job"` — this one job's own report, like every webhook link before this field existed.
+ */
+export type ReportScope = "job" | "general";
 
 export const JOB_STATUSES: readonly JobStatus[] = ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"];
 
@@ -78,6 +84,7 @@ export interface Job {
   readonly reportPath: string | null;
   /** Already validated by whoever queued the job (https, allowlisted host); core only stores and forwards it. Null when none was given. */
   readonly webhookUrl: string | null;
+  readonly reportScope: ReportScope;
   readonly phases: readonly JobPhase[];
 }
 
@@ -92,6 +99,8 @@ export interface NewJob {
   readonly phases: readonly string[];
   readonly retryOf?: string;
   readonly webhookUrl?: string;
+  /** Defaults to `"general"` when omitted — see `ReportScope`'s own doc. */
+  readonly reportScope?: ReportScope;
 }
 
 export interface JobFilter {

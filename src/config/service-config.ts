@@ -31,6 +31,8 @@ export interface ServiceConfig {
    * machine clients, just with the web's login screen disabled (every login attempt fails). */
   readonly webUsers: readonly WebUserCredential[];
   readonly dataDir: string;
+  /** The one branch the general report (`GET /v1/report/general`) tracks. From `E2E_SERVICE_REPORT_BRANCH`, "master" when unset. */
+  readonly reportBranch: string;
   readonly projects: readonly ProjectConfig[];
   /** Present only when a project uses the Detox adapter. */
   readonly detox: DetoxConfig | undefined;

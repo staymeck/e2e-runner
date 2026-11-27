@@ -23,6 +23,7 @@ const config: ServiceConfig = {
     { username: "root", password: ADMIN_PASSWORD, role: "admin" },
   ],
   dataDir: "/unused",
+  reportBranch: "master",
   projects: [],
   detox: undefined,
 };

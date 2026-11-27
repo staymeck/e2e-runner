@@ -80,6 +80,21 @@ export interface ApkScenarioStatus {
   readonly apps: readonly ApkRowStatus[];
 }
 
+/** Mirrors src/api/general-report.controller.ts's `GeneralReportEntryView`. */
+export interface GeneralReportEntryView {
+  readonly target: string;
+  readonly latestOutcome: Outcome;
+  readonly latestJobId: string;
+  readonly latestFinishedAt: string;
+}
+
+/** Mirrors src/api/general-report.controller.ts's `GeneralReportView` — GET /v1/report/general. */
+export interface GeneralReportView {
+  readonly project: string;
+  readonly branch: string;
+  readonly scenarios: readonly GeneralReportEntryView[];
+}
+
 export interface LoginResult {
   readonly token: string;
   readonly username: string;

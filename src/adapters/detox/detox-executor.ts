@@ -8,6 +8,7 @@ import type { CatalogWorkspaces, Workspace } from "./catalog-workspaces";
 import type { ApkStatusLister } from "./apk-status-checker";
 import type { DeviceLister } from "./device-checker";
 import { JOB_APK_PLAN_DIR, detoxCliArgs, namesAScenario, planDetoxPhases } from "./detox-request";
+import type { ReportArchive } from "./report-archive";
 import { deriveOutcome, findRunReport, readRunSummary } from "./run-report";
 import { orchestratorBin, orchestratorPackageRoot, type ScenarioLister } from "./scenario-lister";
 
@@ -32,6 +33,14 @@ export interface DetoxExecutorDeps {
    * no `apkStatus`/`checkReady` at all, not a default that silently reports "nothing is ready".
    */
   readonly apkStatusChecker?: ApkStatusLister;
+  /**
+   * Not read by the executor itself unless configured — a run phase's report folder lives inside the
+   * ephemeral runner worktree (git-clean'd before the next job's checkout), so without this the
+   * `reportPath` returned here stops resolving as soon as another job runs. Optional, same reasoning as
+   * `deviceLister`/`apkStatusChecker`: a test/fixture that doesn't care about report durability doesn't
+   * need to stub it.
+   */
+  readonly reportArchive?: ReportArchive;
   readonly containers: BakeContainers;
   readonly log: JobLog;
   /** The environment `perfect-qa` runs in (the service's, minus its own settings). Read at each start. */
@@ -142,9 +151,15 @@ export class DetoxExecutor implements RunExecutor {
 
     if (exit.spawnError !== undefined) return failure(`Could not start perfect-qa: ${exit.spawnError}`);
 
-    const reportPath = phase.name === "scenario" ? findRunReport(workspace.dir, startedAt) : undefined;
-    const summary = reportPath ? readRunSummary(reportPath) : undefined;
+    const ephemeralReportPath = phase.name === "scenario" ? findRunReport(workspace.dir, startedAt) : undefined;
+    const summary = ephemeralReportPath ? readRunSummary(ephemeralReportPath) : undefined;
     const outcome = deriveOutcome(exit.code, summary);
+    // Archive before this returns: the ephemeral folder is only guaranteed to still exist up to here —
+    // the next job's prepareRun() may clean it the moment this run() call returns. A failed archive
+    // falls back to the ephemeral path rather than dropping the report link entirely.
+    const reportPath = ephemeralReportPath && this.deps.reportArchive
+      ? (this.deps.reportArchive.archive(job.id, ephemeralReportPath) ?? ephemeralReportPath)
+      : ephemeralReportPath;
     const error =
       context.signal.aborted ? "Cancelled" : exit.code === 0 ? undefined : exit.signal ? `perfect-qa was ended by ${exit.signal}` : `perfect-qa exited with code ${exit.code}`;
     say(`\n[e2e-runner] phase ${phase.name} ended: ${exit.signal ?? `exit code ${exit.code}`} (${outcome})\n`);

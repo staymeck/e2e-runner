@@ -105,8 +105,17 @@ export class GitCatalogWorkspaces implements CatalogWorkspaces {
     return this.git.run(async () => (await this.browseRepo.remoteBranches()).filter((name) => isBranchAllowed(this.allowedBranches, name)).sort());
   }
 
+  /**
+   * Fetches before resolving `ref` — without it, a submit landed on whatever this project's browsing
+   * folder last had fetched (only `POST /v1/projects/:id/fetch`, a manual action, used to update it),
+   * so a job queued right after a push could still run the branch's previous commit. Calls
+   * `browseRepo.fetch()` directly, not the public `fetch()` above: that one also goes through
+   * `this.git.run(...)`, and calling it from inside a task already running under the same mutex would
+   * just queue it to start after this task returns, not actually run it first.
+   */
   pin(ref: string): Promise<string> {
     return this.git.run(async () => {
+      await this.browseRepo.fetch();
       const sha = await this.resolve(ref);
       await this.browseRepo.pin(sha);
       return sha;
